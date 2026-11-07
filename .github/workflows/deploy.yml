@@ -1,0 +1,43 @@
+name: Deploy to Azure App Service
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # OIDC login to Azure (no stored passwords)
+  contents: read
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Fail fast if the app can't even import / deps don't resolve.
+      - name: Sanity check
+        run: |
+          pip install -r requirements.txt
+          python -c "import app; print('app imports OK')"
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # Source is zipped and App Service (Oryx) runs pip install -r requirements.txt
+      # because SCM_DO_BUILD_DURING_DEPLOYMENT=true. Startup command is gunicorn.
+      - uses: azure/webapps-deploy@v3
+        with:
+          app-name: ramphack-affan
+          package: .
