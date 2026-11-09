@@ -8,7 +8,7 @@ from app.models import Organization, Person, SetupRow
 ORG_ID = "00000000-0000-4000-8000-000000000001"
 PERSON_ID = "00000000-0000-4000-8000-000000000002"
 SETUP_ID = "00000000-0000-4000-8000-000000000003"
-ENTITY_NAME = "Synthetic Northwind"
+ENTITY_NAME = "Acme Startup LLC"
 
 
 def seed(session: Session) -> None:
