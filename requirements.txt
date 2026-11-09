@@ -1,4 +1,6 @@
-flask
+fastapi
+uvicorn[standard]
 gunicorn
+pydantic
 azure-identity
 azure-storage-blob

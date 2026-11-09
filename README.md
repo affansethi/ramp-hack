@@ -1,24 +1,30 @@
-# Ramp Hack
+# Tax Leak (RAMP)
 
-A small Flask app for our two-person hackathon. It serves both the web pages and a JSON API, and reads/writes files in Azure Blob Storage (`ramphackaffanandrj26` / container `data`).
+Purchase-side sales/use tax review inside a Ramp-shaped spend workflow. FastAPI backend with an in-process worker, a deterministic rule engine over owner-reviewed `rules/*.yaml`, and replay-mode document extraction. **Hackathon demo — synthetic data only; every screen keeps the "Synthetic demo data" banner.**
 
-**Live:** https://ramphack-affan.azurewebsites.net
-(Free tier — the first request after idle can take 30+ seconds to wake up.)
+Authoritative docs:
 
-| Route | What it does |
-|---|---|
-| `/` | Page that lists files in blob storage |
-| `/api/files` | JSON list of blob names |
+- [docs/spec/](docs/spec/) — Design Spec (product rules) and Technical Spec **v2** (build plan; the v1.5 section is superseded — never implement it)
+- [docs/architecture.md](docs/architecture.md) — stack and module map
+- [docs/decisions.md](docs/decisions.md) — why
+
+**Live:** https://ramphack-affan.azurewebsites.net (free tier — the first request after idle can take 30+ seconds to wake up.)
 
 ## Project layout
 
 ```
-app.py              Flask app (routes)                 — owner: Affan
-data.py             Blob helpers: list_files/upload/download — owner: Affan
-templates/          HTML (Jinja)                       — owner: teammate
-static/             style.css, app.js                  — owner: teammate
-requirements.txt
-.github/workflows/  Auto-deploy to Azure on push to main
+app/
+  main.py            FastAPI app factory; serves API + static frontend
+  contracts/         money type, closed enums, AI/engine schemas
+  api/               routers (health today; commands/read models to come)
+  domain/            pipeline stages (pure-ish; adapters injected)
+  worker/            in-process job poller (leases, retries, recovery)
+  adapters/          storage.py, extractor.py, engine.py, ramp.py
+  static/            built frontend (copied from web/ build output)
+rules/               rule entries, S3 catalog, rate tables (owner-authored)
+fixtures/            synthetic documents, expected results, recordings
+tests/               unit/, rules/, gates/, api/, eval/
+docs/                specs, architecture, decisions
 ```
 
 ## Local setup
@@ -27,30 +33,47 @@ requirements.txt
 git clone https://github.com/affansethi/ramp-hack.git
 cd ramp-hack
 
-python3.11 -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
-
-brew install azure-cli
-az login --tenant 1eefd85e-b7f4-4150-9499-cbf14e7498bc
-
-flask --app app run
+pip install -r requirements.txt -r requirements-dev.txt
 ```
 
-Open http://127.0.0.1:5000. If `/api/files` returns a 403/auth error, ask Affan to give your Azure account the **Storage Blob Data Contributor** role on the storage account (role changes can take a few minutes to apply).
+Startup mode guards refuse anything but the synthetic modes — set them in your local `.env` (gitignored) or shell:
 
-Auth uses `DefaultAzureCredential`: locally it uses your `az login`, and in Azure it uses the web app's managed identity. No keys or connection strings anywhere.
+```bash
+export DATA_MODE=synthetic ENGINE_MODE=mock_reviewed_ruleset DEMO_MODE=true
+# LLM_MODE=replay is the default; `live` needs MODEL_API_KEY from .env
+```
+
+Local database defaults to SQLite (scratch only; hosted state is managed PostgreSQL). Set `DATABASE_URL` to override.
+
+## Run
+
+```bash
+uvicorn app.main:app --reload          # local dev
+gunicorn -w 1 -k uvicorn.workers.UvicornWorker app.main:app   # hosted (App Service startup command)
+```
+
+Exactly one worker process: the background job poller runs in-process. Health: `GET /health` (also `/api/v1/health`) reports modes and never calls the model.
+
+## Checks
+
+```bash
+make check      # ruff check, ruff format --check, mypy app, pytest
+```
+
+Or individually per [AGENTS.md](AGENTS.md): `ruff check .`, `ruff format --check .`, `mypy app`, `pytest` (fast loop: `pytest tests/unit tests/rules`).
+
+CI runs the same command in [.github/workflows/ci.yml](.github/workflows/ci.yml) on pull requests and pushes to `main`.
+
+## Storage
+
+Documents live in Azure Blob Storage (`ramphackaffanandrj26` / container `data`), accessed via `DefaultAzureCredential` from `app/adapters/storage.py` — locally your `az login`, in Azure the app's managed identity. No keys or connection strings anywhere. If blob access returns a 403/auth error, ask Affan to give your Azure account the **Storage Blob Data Contributor** role on the storage account (role changes can take a few minutes to apply).
 
 ## Deployment
 
-Every push to `main` runs [.github/workflows/deploy.yml](.github/workflows/deploy.yml), which deploys to Azure App Service. Watch it in the repo's **Actions** tab (or `gh run watch`). Dependencies are installed from `requirements.txt` on deploy and the app runs with gunicorn.
+Every push to `main` runs [.github/workflows/deploy.yml](.github/workflows/deploy.yml), which deploys to Azure App Service (OIDC login, no Azure secrets in GitHub). Watch it in the repo's **Actions** tab (or `gh run watch`).
 
 ## Team rules
 
-1. **Everyone works on `main`.** No branches needed.
-2. **Ownership:** Affan owns `app.py` and `data.py`. Teammate owns `templates/` and `static/`. Ask before editing the other person's files.
-3. **Sync before starting and before pushing:** `git pull --rebase`.
-4. **Only push code that runs locally.** `main` auto-deploys to the live site.
-5. **Prefix test blobs with your initials**, e.g. `affan/test.txt`, `rj/test.txt`.
-6. **Secrets** go in a local `.env` (gitignored) and in App Service environment variables (Azure portal → web app → Settings → Environment variables). **Never in code.**
-7. **Code freeze 2 hours before the demo.**
+See [AGENTS.md](AGENTS.md): money is `Decimal`/decimal strings end to end; closed enums in `app/contracts/` are owner-gated; hard rules H1–H5; agents never author rule entries, rates, catalog substance or expected results; every mutation takes `Idempotency-Key`; synthetic data only.
