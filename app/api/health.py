@@ -1,12 +1,23 @@
-"""Health endpoint: reports modes, never calls the model (architecture §4)."""
+"""Health endpoint: reports modes and storage, never calls the model.
+
+Architecture §4: database, storage, and modes. When Azure credentials are
+absent, storage is ``skipped`` and DefaultAzureCredential is not constructed.
+``unavailable`` is reserved for a configured check that failed. The HTTP
+status stays 200.
+"""
+
+from typing import Literal
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
+from app.adapters import storage as blob_storage
 from app.config import Settings
 from app.db import database_ok
 
 router = APIRouter(tags=["health"])
+
+StorageReport = Literal["ok", "unavailable", "skipped"]
 
 
 class HealthResponse(BaseModel):
@@ -17,6 +28,19 @@ class HealthResponse(BaseModel):
     llm_mode: str
     llm_replay: bool
     database: str
+    storage: StorageReport
+
+
+def _storage_report() -> StorageReport:
+    if not blob_storage.credentials_configured():
+        return "skipped"
+    try:
+        reachable = blob_storage.probe_container()
+    except Exception:
+        return "unavailable"
+    if reachable:
+        return "ok"
+    return "unavailable"
 
 
 def _health_payload(settings: Settings, database: str) -> HealthResponse:
@@ -28,6 +52,7 @@ def _health_payload(settings: Settings, database: str) -> HealthResponse:
         llm_mode=settings.llm_mode.value,
         llm_replay=settings.llm_replay,
         database=database,
+        storage=_storage_report(),
     )
 
 

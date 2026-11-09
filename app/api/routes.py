@@ -15,6 +15,7 @@ from app.adapters.ramp import signature_matches
 from app.api.idempotency import begin, finish
 from app.api.serialize import meta, purchase_detail, purchase_summary
 from app.clock import utcnow
+from app.contracts.jobs import read_job
 from app.demo.scenarios import get_scenario, scenario_ids
 from app.domain.commands import (
     add_human_fact,
@@ -304,14 +305,15 @@ def job(job_id: str, request: Request, session: Db) -> dict[str, object]:
     row = session.get(Job, job_id)
     if row is None or row.org_id != viewer.org_id:
         raise DomainError("NOT_FOUND", "Job not found.", 404)
-    return {
-        **meta(request.app.state.settings),
-        "id": row.id,
-        "status": row.status,
-        "purchase_id": row.purchase_id,
-        "attempts": row.attempts,
-        "error_code": row.error_code,
-    }
+    body = read_job(
+        id=row.id,
+        status=row.status,
+        purchase_id=row.purchase_id,
+        attempts=row.attempts,
+        error_code=row.error_code,
+        stage=row.kind,
+    )
+    return {**meta(request.app.state.settings), **body.model_dump(mode="json")}
 
 
 @router.get("/purchases")
