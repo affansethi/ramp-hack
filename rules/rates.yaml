@@ -1,0 +1,27 @@
+# Spec seed rates. review_status stays candidate until AF reviews them.
+# rate is a decimal string. A float in this file is rejected by the loader.
+rates:
+  - jurisdiction: WA
+    location: Seattle, WA
+    location_code: "1726"
+    rate: "0.1055"
+    quarter: "2026Q4"
+    source_url: https://dor.wa.gov/taxes-rates/sales-use-tax-rates/local-sales-use-tax/local-sales-use-tax-rate-table
+    review_status: candidate
+    reviewed_by:
+  - jurisdiction: CA
+    location: San Francisco, CA
+    location_code: "n/a"
+    rate: "0.08625"
+    quarter: "2026Q4"
+    source_url: https://www.cdtfa.ca.gov/taxes-and-fees/rates.htm
+    review_status: candidate
+    reviewed_by:
+  - jurisdiction: NY
+    location: New York City, NY
+    location_code: "8081"
+    rate: "0.08875"
+    quarter: "2026Q4"
+    source_url: https://www.tax.ny.gov/pdf/publications/sales/pub718.pdf
+    review_status: candidate
+    reviewed_by:

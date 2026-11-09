@@ -1,13 +1,12 @@
-"""Ramp-shaped simulator seam (sandbox later via RAMP_API_BASE).
+"""HMAC-SHA256 check for X-Ramp-Signature. Missing secret never counts as valid."""
 
-HMAC-SHA256 verification of X-Ramp-Signature, event dedup, transaction
-and receipt fetches. Webhook intake stores the event and returns 200;
-all work happens in the worker.
-"""
-
-from typing import Protocol
+import hashlib
+import hmac
 
 
-class RampClient(Protocol):
-    """Simulator/sandbox client boundary. Implementation lands with the
-    webhook-intake work item."""
+def signature_matches(body: bytes, header: str, secret: str) -> bool:
+    if not secret or not header:
+        return False
+    supplied = header.removeprefix("sha256=")
+    digest = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(digest, supplied)

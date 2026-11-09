@@ -1,0 +1,768 @@
+"""Ingest a synthetic purchase and advance it until it stops or waits for review."""
+
+from dataclasses import dataclass
+from datetime import date
+from hashlib import sha256
+from uuid import uuid4
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.clock import utcnow
+from app.demo.scenarios import LineInput, Scenario
+from app.domain.errors import DomainError
+from app.domain.evaluate import EngineLineRequest, evaluate_line
+from app.domain.holds import (
+    FactView,
+    HoldDecision,
+    confirmed_states,
+    decide_hold,
+    location_confirmation,
+    undeclared,
+)
+from app.domain.moneyutil import differs_by_more_than_one_cent, parse_decimal
+from app.domain.ruleset import Ruleset
+from app.models import (
+    Determination,
+    Document,
+    Evidence,
+    Fact,
+    Hold,
+    Job,
+    Purchase,
+    PurchaseLine,
+    Question,
+    SourceEvent,
+)
+from app.seed import ENTITY_NAME
+
+SUPPORTED_CATEGORIES = frozenset({"REMOTE_ACCESS_SAAS", "COMPUTER_HARDWARE"})
+
+
+@dataclass(frozen=True)
+class IngestResult:
+    purchase_id: str | None
+    job_id: str | None
+    duplicate: bool
+    source_event_id: str
+
+
+def ingest_scenario(session: Session, scenario: Scenario, org_id: str) -> IngestResult:
+    if scenario.currency != "USD":
+        raise DomainError("UNSUPPORTED_CURRENCY", "Only USD is in the demo.", 422)
+    return _ingest(
+        session,
+        org_id=org_id,
+        event_id=scenario.event_id,
+        signature_result="DEMO",
+        payload=scenario.id,
+        vendor=scenario.vendor,
+        invoice_number=scenario.invoice_number,
+        invoice_date=scenario.invoice_date,
+        entity_amount=scenario.entity_amount,
+        ocr_taxes=scenario.ocr_taxes,
+        category=scenario.category,
+        bill_to=scenario.bill_to,
+        lines=scenario.lines,
+        demo_scenario=scenario.id,
+        extraction_mode="replay",
+        transaction_id=scenario.event_id,
+    )
+
+
+def ingest_webhook(
+    session: Session,
+    org_id: str,
+    *,
+    event_id: str,
+    transaction_id: str,
+    vendor: str,
+    amount: str,
+    currency: str,
+    invoice_date: str,
+    signature_ok: bool,
+) -> IngestResult:
+    if not signature_ok:
+        existing = _find_event(session, org_id, event_id)
+        if existing is None:
+            event = SourceEvent(
+                id=str(uuid4()),
+                org_id=org_id,
+                source="ramp",
+                external_event_id=event_id,
+                payload_hash=_hash(event_id),
+                signature_result="BAD_SIGNATURE",
+                purchase_id=None,
+                created_at=utcnow(),
+            )
+            session.add(event)
+            session.flush()
+            return IngestResult(None, None, False, event.id)
+        return IngestResult(existing.purchase_id, None, True, existing.id)
+    if currency != "USD":
+        raise DomainError("UNSUPPORTED_CURRENCY", "Only USD is in the demo.", 422)
+    line = LineInput(
+        description="Ramp transaction, no receipt recording",
+        line_amount=amount,
+        tax_charged=None,
+        tax_jurisdiction=None,
+        service_start=None,
+        service_end=None,
+        delivery_date=None,
+        shipping=None,
+        location_name=None,
+        location_state=None,
+        location_rung=None,
+        seats=None,
+        seats_covered=None,
+    )
+    return _ingest(
+        session,
+        org_id=org_id,
+        event_id=event_id,
+        signature_result="OK",
+        payload=event_id,
+        vendor=vendor,
+        invoice_number=f"RAMP-{transaction_id}",
+        invoice_date=invoice_date,
+        entity_amount=amount,
+        ocr_taxes=None,
+        category=None,
+        bill_to="",
+        lines=(line,),
+        demo_scenario=None,
+        extraction_mode="replay_miss",
+        transaction_id=transaction_id,
+    )
+
+
+def advance_purchase(session: Session, purchase_id: str, ruleset: Ruleset) -> None:
+    purchase = session.get(Purchase, purchase_id)
+    if purchase is None:
+        return
+    already = session.scalars(
+        select(Determination).where(
+            Determination.purchase_id == purchase.id,
+            Determination.facts_version == purchase.facts_version,
+            Determination.ruleset_version == ruleset.version,
+            Determination.is_current.is_(True),
+        )
+    ).all()
+    if already:
+        return
+    _supersede_current(session, purchase)
+    lines = list(
+        session.scalars(
+            select(PurchaseLine)
+            .where(PurchaseLine.purchase_id == purchase.id)
+            .order_by(PurchaseLine.line_number)
+        ).all()
+    )
+    facts = list(
+        session.scalars(
+            select(Fact).where(
+                Fact.purchase_id == purchase.id, Fact.is_current.is_(True)
+            )
+        ).all()
+    )
+    _apply_cross_check(purchase, lines, facts)
+    if not purchase.category or purchase.category not in SUPPORTED_CATEGORIES:
+        if (
+            purchase.category not in SUPPORTED_CATEGORIES
+            and purchase.category is not None
+        ):
+            _clear_holds(session, purchase, release_version=purchase.facts_version)
+            _item_nhr(session, purchase, ruleset, "NO_SUPPORTED_CATEGORY", lines)
+            return
+        _set_hold(session, purchase, HoldDecision("MISSING_REQUIRED_FACT", "category"))
+        purchase.item_status = "HELD"
+        return
+    hold = _first_hold(purchase.category, lines, facts, ruleset)
+    if hold is not None:
+        _set_hold(session, purchase, hold)
+        purchase.item_status = "HELD"
+        return
+    _clear_holds(session, purchase, release_version=purchase.facts_version)
+    states = _states_for_purchase(lines, facts)
+    if undeclared(states):
+        _item_nhr(session, purchase, ruleset, "UNDECLARED_JURISDICTION", lines)
+        return
+    if not states:
+        _set_hold(
+            session, purchase, HoldDecision("MISSING_REQUIRED_FACT", "user_location")
+        )
+        purchase.item_status = "HELD"
+        return
+    for line in lines:
+        line_states = _states_for_line(line, facts)
+        for jurisdiction in line_states:
+            _evaluate_one(
+                session, purchase, line, jurisdiction, facts, ruleset, len(states)
+            )
+    purchase.item_status = "DETERMINED"
+
+
+def _ingest(
+    session: Session,
+    *,
+    org_id: str,
+    event_id: str,
+    signature_result: str,
+    payload: str,
+    vendor: str,
+    invoice_number: str,
+    invoice_date: str,
+    entity_amount: str,
+    ocr_taxes: str | None,
+    category: str | None,
+    bill_to: str,
+    lines: tuple[LineInput, ...],
+    demo_scenario: str | None,
+    extraction_mode: str,
+    transaction_id: str,
+) -> IngestResult:
+    existing = _find_event(session, org_id, event_id)
+    if existing is not None and existing.purchase_id is not None:
+        return IngestResult(existing.purchase_id, None, True, existing.id)
+    if existing is not None:
+        event = existing
+    else:
+        event = SourceEvent(
+            id=str(uuid4()),
+            org_id=org_id,
+            source="ramp",
+            external_event_id=event_id,
+            payload_hash=_hash(payload),
+            signature_result=signature_result,
+            purchase_id=None,
+            created_at=utcnow(),
+        )
+        session.add(event)
+        session.flush()
+    purchase = Purchase(
+        id=str(uuid4()),
+        org_id=org_id,
+        vendor=vendor,
+        invoice_number=invoice_number,
+        invoice_date=invoice_date,
+        entity_name=ENTITY_NAME,
+        currency="USD",
+        item_status="INTAKEN",
+        ramp_transaction_id=transaction_id,
+        ramp_entity_amount=entity_amount,
+        ramp_ocr_taxes=ocr_taxes,
+        category=category,
+        demo_scenario=demo_scenario,
+        extraction_mode=extraction_mode,
+        facts_version=1,
+        bill_to=bill_to or None,
+        created_at=utcnow(),
+    )
+    session.add(purchase)
+    document = Document(
+        id=str(uuid4()),
+        purchase_id=purchase.id,
+        sha256=_hash(invoice_number),
+        mime_type="application/json",
+        pages=1,
+    )
+    session.add(document)
+    stored_lines: list[PurchaseLine] = []
+    for number, line in enumerate(lines, start=1):
+        row = PurchaseLine(
+            id=str(uuid4()),
+            purchase_id=purchase.id,
+            line_number=number,
+            description=line.description,
+            quantity=line.quantity,
+            unit_price=line.line_amount,
+            line_amount=line.line_amount,
+            service_period_start=line.service_start,
+            service_period_end=line.service_end,
+            delivery_date=line.delivery_date,
+            location_name=line.location_name,
+            shipping_amount=line.shipping,
+        )
+        session.add(row)
+        stored_lines.append(row)
+    session.flush()
+    _write_facts(session, purchase, document, stored_lines, lines, bill_to)
+    event.purchase_id = purchase.id
+    event.signature_result = signature_result
+    job = _enqueue(session, org_id, purchase.id)
+    return IngestResult(purchase.id, job.id, False, event.id)
+
+
+def _write_facts(
+    session: Session,
+    purchase: Purchase,
+    document: Document,
+    stored_lines: list[PurchaseLine],
+    inputs: tuple[LineInput, ...],
+    bill_to: str,
+) -> None:
+    header = {
+        "vendor_name": purchase.vendor,
+        "invoice_date": purchase.invoice_date,
+        "buyer_entity": purchase.entity_name,
+    }
+    if purchase.category == "REMOTE_ACCESS_SAAS":
+        header["delivery_method"] = "electronic"
+        header["access_model"] = "remote"
+    for key, value in header.items():
+        _add_fact(
+            session,
+            purchase,
+            document,
+            line_id=None,
+            key=key,
+            value=value,
+            confirmation="CONFIRMED",
+            rung=None,
+            passage=f"Synthetic invoice {purchase.invoice_number}",
+        )
+    if bill_to:
+        _add_fact(
+            session,
+            purchase,
+            document,
+            line_id=None,
+            key="bill_to",
+            value=bill_to,
+            confirmation="UNCONFIRMED",
+            rung=None,
+            passage="Bill-to is context only and does not confirm use or delivery.",
+        )
+    for stored, incoming in zip(stored_lines, inputs, strict=True):
+        _add_fact(
+            session,
+            purchase,
+            document,
+            stored.id,
+            "line_description",
+            incoming.description,
+            "CONFIRMED",
+            None,
+            incoming.description,
+        )
+        _add_fact(
+            session,
+            purchase,
+            document,
+            stored.id,
+            "line_amount",
+            incoming.line_amount,
+            "CONFIRMED",
+            None,
+            incoming.line_amount,
+        )
+        if incoming.tax_charged is not None:
+            _add_fact(
+                session,
+                purchase,
+                document,
+                stored.id,
+                "tax_charged",
+                incoming.tax_charged,
+                "CONFIRMED",
+                None,
+                f"Tax charged printed as {incoming.tax_charged}",
+            )
+        if incoming.tax_jurisdiction:
+            _add_fact(
+                session,
+                purchase,
+                document,
+                stored.id,
+                "tax_charged_jurisdiction",
+                incoming.tax_jurisdiction,
+                "CONFIRMED",
+                None,
+                f"Tax jurisdiction printed as {incoming.tax_jurisdiction}",
+            )
+        if incoming.service_start and incoming.service_end:
+            _add_fact(
+                session,
+                purchase,
+                document,
+                stored.id,
+                "service_period",
+                f"{incoming.service_start}/{incoming.service_end}",
+                "CONFIRMED",
+                None,
+                f"{incoming.service_start} to {incoming.service_end}",
+            )
+        if incoming.seats is not None:
+            _add_fact(
+                session,
+                purchase,
+                document,
+                stored.id,
+                "seat_count",
+                str(incoming.seats),
+                "CONFIRMED",
+                None,
+                f"{incoming.seats} seats",
+            )
+        if incoming.location_state:
+            confirmation = location_confirmation(
+                rung=incoming.location_rung,
+                seats=incoming.seats,
+                seats_covered=incoming.seats_covered,
+                named_single_office=incoming.named_single_office,
+                from_bill_to=False,
+            )
+            _add_fact(
+                session,
+                purchase,
+                document,
+                stored.id,
+                "user_location",
+                incoming.location_state,
+                confirmation,
+                incoming.location_rung,
+                incoming.location_name or incoming.location_state,
+            )
+        if (
+            purchase.category == "COMPUTER_HARDWARE"
+            and incoming.location_state
+            and incoming.delivery_date
+        ):
+            _add_fact(
+                session,
+                purchase,
+                document,
+                stored.id,
+                "delivery_evidence",
+                incoming.location_state,
+                "CONFIRMED",
+                None,
+                f"Delivered {incoming.delivery_date} to {incoming.location_name}",
+            )
+        if incoming.shipping is not None:
+            _add_fact(
+                session,
+                purchase,
+                document,
+                stored.id,
+                "shipping",
+                incoming.shipping,
+                "CONFIRMED",
+                None,
+                f"Shipping printed as {incoming.shipping}",
+            )
+
+
+def _add_fact(
+    session: Session,
+    purchase: Purchase,
+    document: Document,
+    line_id: str | None,
+    key: str,
+    value: str,
+    confirmation: str,
+    rung: int | None,
+    passage: str,
+) -> None:
+    fact = Fact(
+        id=str(uuid4()),
+        org_id=purchase.org_id,
+        purchase_id=purchase.id,
+        line_id=line_id,
+        field_key=key,
+        value=value,
+        origin="AI_EXTRACTED"
+        if purchase.extraction_mode == "replay"
+        else "RAMP_RECORD",
+        source="replay recording"
+        if purchase.extraction_mode == "replay"
+        else "ramp transaction",
+        evidence_rung=rung,
+        confirmation=confirmation,
+        version=purchase.facts_version,
+        is_current=True,
+        supersedes=None,
+    )
+    session.add(fact)
+    session.flush()
+    session.add(
+        Evidence(
+            id=str(uuid4()),
+            fact_id=fact.id,
+            document_id=document.id,
+            page=1,
+            passage=passage,
+            provenance=purchase.extraction_mode,
+        )
+    )
+
+
+def _apply_cross_check(
+    purchase: Purchase, lines: list[PurchaseLine], facts: list[Fact]
+) -> None:
+    line_total = sum(
+        (parse_decimal(line.line_amount) for line in lines), start=parse_decimal("0")
+    )
+    if purchase.ramp_entity_amount and differs_by_more_than_one_cent(
+        purchase.ramp_entity_amount, f"{line_total:.2f}"
+    ):
+        for fact in facts:
+            if fact.field_key == "line_amount":
+                fact.confirmation = "UNCONFIRMED"
+    if purchase.ramp_ocr_taxes is None:
+        return
+    charged = [
+        parse_decimal(fact.value)
+        for fact in facts
+        if fact.field_key == "tax_charged" and fact.value is not None
+    ]
+    if not charged:
+        return
+    tax_total = sum(charged, start=parse_decimal("0"))
+    if differs_by_more_than_one_cent(purchase.ramp_ocr_taxes, f"{tax_total:.2f}"):
+        for fact in facts:
+            if fact.field_key == "tax_charged":
+                fact.confirmation = "UNCONFIRMED"
+
+
+def _first_hold(
+    category: str, lines: list[PurchaseLine], facts: list[Fact], ruleset: Ruleset
+) -> HoldDecision | None:
+    for line in lines:
+        decision = decide_hold(category, _views(facts, line.id), ruleset.catalog)
+        if decision is not None:
+            return decision
+    return None
+
+
+def _views(facts: list[Fact], line_id: str) -> dict[str, FactView]:
+    views: dict[str, FactView] = {}
+    for fact in facts:
+        if fact.line_id not in (None, line_id):
+            continue
+        if fact.field_key in views and fact.line_id is None:
+            continue
+        views[fact.field_key] = FactView(
+            key=fact.field_key,
+            value=fact.value,
+            present=fact.value is not None,
+            confirmation=fact.confirmation,
+        )
+    return views
+
+
+def _states_for_purchase(lines: list[PurchaseLine], facts: list[Fact]) -> list[str]:
+    found: list[str] = []
+    for line in lines:
+        for state in _states_for_line(line, facts):
+            if state not in found:
+                found.append(state)
+    return found
+
+
+def _states_for_line(line: PurchaseLine, facts: list[Fact]) -> list[str]:
+    return confirmed_states(_views(facts, line.id))
+
+
+def _evaluate_one(
+    session: Session,
+    purchase: Purchase,
+    line: PurchaseLine,
+    jurisdiction: str,
+    facts: list[Fact],
+    ruleset: Ruleset,
+    state_count: int,
+) -> None:
+    views = _views(facts, line.id)
+    tax = views.get("tax_charged")
+    if tax is None or tax.value is None:
+        return
+    result = evaluate_line(
+        ruleset,
+        EngineLineRequest(
+            jurisdiction=jurisdiction,
+            category=purchase.category or "",
+            invoice_date=date.fromisoformat(purchase.invoice_date),
+            service_period_start=_optional_date(line.service_period_start),
+            delivery_date=_optional_date(line.delivery_date),
+            line_amount=line.line_amount,
+            tax_charged=tax.value,
+            shipping=line.shipping_amount,
+            location_name=line.location_name or "",
+            state_count=state_count,
+        ),
+    )
+    if result.outcome == "supported":
+        label: str | None = "ENGINE_SUPPORTED"
+        unit_status = "READY_FOR_REVIEW"
+    elif result.outcome == "unsupported":
+        label = "NEEDS_HUMAN_REVIEW"
+        unit_status = "NHR_ENGINE"
+    else:
+        label = None
+        unit_status = "DETERMINATION_ERROR"
+    session.add(
+        Determination(
+            id=str(uuid4()),
+            org_id=purchase.org_id,
+            purchase_id=purchase.id,
+            line_id=line.id,
+            jurisdiction=jurisdiction,
+            facts_version=purchase.facts_version,
+            ruleset_version=ruleset.version,
+            label=label,
+            nhr_reason=result.nhr_reason,
+            direction=result.direction,
+            derived_direction=result.derived_direction,
+            rate=result.rate,
+            location_code=result.location_code,
+            expected_tax=result.expected_tax,
+            engine_amount=result.adjustment_amount,
+            rule_reference=result.rule_reference,
+            engine_treatment=result.treatment,
+            unit_status=unit_status,
+            version=1,
+            is_current=True,
+            error_code=result.error_code,
+        )
+    )
+
+
+def _item_nhr(
+    session: Session,
+    purchase: Purchase,
+    ruleset: Ruleset,
+    reason: str,
+    lines: list[PurchaseLine],
+) -> None:
+    session.add(
+        Determination(
+            id=str(uuid4()),
+            org_id=purchase.org_id,
+            purchase_id=purchase.id,
+            line_id=lines[0].id if lines else purchase.id,
+            jurisdiction="ITEM",
+            facts_version=purchase.facts_version,
+            ruleset_version=ruleset.version,
+            label="NEEDS_HUMAN_REVIEW",
+            nhr_reason=reason,
+            direction=None,
+            derived_direction=False,
+            rate=None,
+            location_code=None,
+            expected_tax=None,
+            engine_amount=None,
+            rule_reference=None,
+            engine_treatment=None,
+            unit_status="NHR_ENGINE",
+            version=1,
+            is_current=True,
+            error_code=None,
+        )
+    )
+    purchase.item_status = "NHR_PRE_DETERMINATION"
+
+
+def _set_hold(session: Session, purchase: Purchase, decision: HoldDecision) -> None:
+    current = session.scalars(
+        select(Hold).where(Hold.purchase_id == purchase.id, Hold.active.is_(True))
+    ).all()
+    for hold in current:
+        if hold.reason == decision.reason and hold.named_fact == decision.named_fact:
+            return
+        hold.active = False
+        hold.releasing_fact_version = purchase.facts_version
+    hold = Hold(
+        id=str(uuid4()),
+        purchase_id=purchase.id,
+        reason=decision.reason,
+        named_fact=decision.named_fact,
+        active=True,
+        releasing_fact_version=None,
+    )
+    session.add(hold)
+    session.flush()
+    session.add(
+        Question(
+            id=str(uuid4()),
+            hold_id=hold.id,
+            purchase_id=purchase.id,
+            fact_key=decision.named_fact,
+            recipient="spend owner",
+            asked_at=utcnow(),
+            answer=None,
+            state="open",
+        )
+    )
+
+
+def enqueue_advance(session: Session, org_id: str, purchase_id: str) -> Job:
+    return _enqueue(session, org_id, purchase_id)
+
+
+def _clear_holds(session: Session, purchase: Purchase, release_version: int) -> None:
+    holds = session.scalars(
+        select(Hold).where(Hold.purchase_id == purchase.id, Hold.active.is_(True))
+    ).all()
+    for hold in holds:
+        hold.active = False
+        hold.releasing_fact_version = release_version
+
+
+def _supersede_current(session: Session, purchase: Purchase) -> None:
+    rows = session.scalars(
+        select(Determination).where(
+            Determination.purchase_id == purchase.id,
+            Determination.is_current.is_(True),
+        )
+    ).all()
+    for row in rows:
+        if row.facts_version == purchase.facts_version:
+            continue
+        row.is_current = False
+        row.unit_status = "SUPERSEDED"
+
+
+def _enqueue(session: Session, org_id: str, purchase_id: str) -> Job:
+    waiting = session.scalar(
+        select(Job).where(
+            Job.purchase_id == purchase_id,
+            Job.status.in_(("QUEUED", "RUNNING")),
+        )
+    )
+    if waiting is not None:
+        return waiting
+    job = Job(
+        id=str(uuid4()),
+        org_id=org_id,
+        kind="advance",
+        purchase_id=purchase_id,
+        status="QUEUED",
+        lease_until=None,
+        attempts=0,
+        error_code=None,
+        created_at=utcnow(),
+    )
+    session.add(job)
+    session.flush()
+    return job
+
+
+def _find_event(session: Session, org_id: str, event_id: str) -> SourceEvent | None:
+    return session.scalar(
+        select(SourceEvent).where(
+            SourceEvent.org_id == org_id,
+            SourceEvent.source == "ramp",
+            SourceEvent.external_event_id == event_id,
+        )
+    )
+
+
+def _optional_date(value: str | None) -> date | None:
+    if value is None:
+        return None
+    return date.fromisoformat(value)
+
+
+def _hash(value: str) -> str:
+    return sha256(value.encode("utf-8")).hexdigest()
