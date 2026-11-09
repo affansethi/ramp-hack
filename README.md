@@ -77,3 +77,13 @@ Every push to `main` runs [.github/workflows/deploy.yml](.github/workflows/deplo
 ## Team rules
 
 See [AGENTS.md](AGENTS.md): money is `Decimal`/decimal strings end to end; closed enums in `app/contracts/` are owner-gated; hard rules H1–H5; agents never author rule entries, rates, catalog substance or expected results; every mutation takes `Idempotency-Key`; synthetic data only.
+
+## Contributing
+
+One issue, one PR. Before committing, run the checks from [AGENTS.md](AGENTS.md):
+
+```bash
+make check
+```
+
+That runs `ruff check .`, `ruff format --check .`, `mypy app`, and `pytest`.
