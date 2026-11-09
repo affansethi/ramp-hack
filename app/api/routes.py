@@ -618,6 +618,15 @@ def _filtered_purchases(session: Session, org_id: str, params: QueryParams) -> _
     current: dict[str, list[Determination]] = {row.id: [] for row in rows}
     for determination in determinations:
         current.setdefault(determination.purchase_id, []).append(determination)
+    history: dict[str, list[Determination]] = {}
+    if review == "SUPERSEDED" and by_id:
+        for determination in session.scalars(
+            select(Determination).where(
+                Determination.purchase_id.in_(by_id),
+                Determination.unit_status == "SUPERSEDED",
+            )
+        ).all():
+            history.setdefault(determination.purchase_id, []).append(determination)
 
     kept: list[Purchase] = []
     for row in rows:
@@ -635,10 +644,13 @@ def _filtered_purchases(session: Session, org_id: str, params: QueryParams) -> _
             item.direction == direction for item in rows_current
         ):
             continue
-        if review is not None and not any(
-            item.unit_status == review for item in rows_current
-        ):
-            continue
+        if review is not None:
+            if review == "SUPERSEDED":
+                pool = list(rows_current) + history.get(row.id, [])
+                if not any(item.unit_status == "SUPERSEDED" for item in pool):
+                    continue
+            elif not any(item.unit_status == review for item in rows_current):
+                continue
         kept.append(row)
 
     start = 0
@@ -648,10 +660,15 @@ def _filtered_purchases(session: Session, org_id: str, params: QueryParams) -> _
             if start < 0 or start > len(kept):
                 raise DomainError("BAD_REQUEST", "Unknown cursor.", 422)
         else:
-            ids = [row.id for row in kept]
-            if cursor not in ids:
+            cursor_row = session.get(Purchase, cursor)
+            if cursor_row is None or cursor_row.org_id != org_id:
                 raise DomainError("BAD_REQUEST", "Unknown cursor.", 422)
-            start = ids.index(cursor) + 1
+            cursor_key = (cursor_row.created_at, cursor_row.id)
+            start = len(kept)
+            for index, row in enumerate(kept):
+                if (row.created_at, row.id) > cursor_key:
+                    start = index
+                    break
     page = kept[start : start + limit]
     next_cursor = page[-1].id if start + limit < len(kept) else None
     return _Listing(page, next_cursor)

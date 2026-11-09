@@ -17,6 +17,7 @@ from app.config import load_settings
 from app.main import create_app
 from app.models import Determination, Purchase
 from app.seed import ORG_ID
+from app.worker.poller import poll_once
 from tests.api.test_flow import GOOD_ENV, _activate, _headers, _run
 
 SUMMARY_FIELDS = {
@@ -308,7 +309,6 @@ def test_review_status_covers_all_stored_values(tmp_path: Path) -> None:
             "DETERMINATION_ERROR",
             "NHR_ENGINE",
             "SENT_TO_ADVISOR",
-            "SUPERSEDED",
         ]
         wanted: dict[str, str] = {}
         for index, status in enumerate(statuses):
@@ -320,10 +320,10 @@ def test_review_status_covers_all_stored_values(tmp_path: Path) -> None:
                 client,
                 purchase_id,
                 label="ENGINE_SUPPORTED"
-                if status not in ("NHR_ENGINE", "DETERMINATION_ERROR", "SUPERSEDED")
+                if status not in ("NHR_ENGINE", "DETERMINATION_ERROR")
                 else ("NEEDS_HUMAN_REVIEW" if status == "NHR_ENGINE" else None),
                 direction="LIABILITY"
-                if status not in ("NHR_ENGINE", "DETERMINATION_ERROR", "SUPERSEDED")
+                if status not in ("NHR_ENGINE", "DETERMINATION_ERROR")
                 else None,
                 unit_status=status,
             )
@@ -333,6 +333,81 @@ def test_review_status_covers_all_stored_values(tmp_path: Path) -> None:
             assert purchase_id in {row["id"] for row in body["purchases"]}, status
         bad = _listing_raw(client, "?review_status=APPROVED_LATE")
         assert bad.status_code == 422
+
+
+def test_review_status_superseded_uses_history(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        _login(client)
+        created = _run(client, "case1", "supersede-seed")
+        purchase_id = str(created["purchase_id"])
+        detail = client.get(
+            f"/api/v1/purchases/{purchase_id}",
+            headers={"X-Requested-With": "taxleak"},
+        ).json()
+        response = client.post(
+            f"/api/v1/purchases/{purchase_id}/facts",
+            json={
+                "field": "user_location",
+                "value": "Seattle, WA",
+                "source": "seat export",
+                "reason": "correct location",
+                "expected_version": detail["facts_version"],
+            },
+            headers=_headers("supersede-fact"),
+        )
+        assert response.status_code == 200, response.text
+        poll_once(client.app.state.ctx)
+        body = _listing(client, "?review_status=SUPERSEDED")
+        assert purchase_id in {row["id"] for row in body["purchases"]}
+
+
+def test_cursor_survives_filter_change_after_approve(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        _login(client)
+        _run(client, "case1", "cursor-approve-1")
+        _run(client, "case2", "cursor-approve-2")
+        _run(client, "case3", "cursor-approve-3")
+        first = _listing(client, "?review_status=READY_FOR_REVIEW&limit=2")
+        assert len(first["purchases"]) == 2
+        assert first.get("next_cursor")
+        last_id = first["purchases"][-1]["id"]
+        detail = client.get(
+            f"/api/v1/purchases/{last_id}",
+            headers={"X-Requested-With": "taxleak"},
+        ).json()
+        assert detail["determinations"]
+        determination = detail["determinations"][0]
+        approval_path = "LIABILITY"
+        session = client.app.state.ctx.session_factory()
+        try:
+            stored = session.get(Determination, determination["id"])
+            assert stored is not None
+            if stored.direction == "REFUND_CANDIDATE":
+                approval_path = "REFUND_PURSUIT"
+            elif stored.direction == "CHARGED_CORRECTLY":
+                approval_path = "CHARGED_CORRECTLY"
+        finally:
+            session.close()
+        approved = client.post(
+            f"/api/v1/determinations/{determination['id']}/review",
+            json={
+                "action": "approve",
+                "approval_path": approval_path,
+                "reason": "reviewed",
+                "expected_version": determination["version"],
+            },
+            headers=_headers("cursor-approve"),
+        )
+        assert approved.status_code == 200, approved.text
+        second = _listing_raw(
+            client,
+            f"?review_status=READY_FOR_REVIEW&limit=2&cursor={first['next_cursor']}",
+        )
+        assert second.status_code == 200, second.text
+        first_ids = {row["id"] for row in first["purchases"]}
+        second_ids = {row["id"] for row in second.json()["purchases"]}
+        assert last_id not in second_ids
+        assert not first_ids & second_ids
 
 
 def test_unknown_values_are_422(tmp_path: Path) -> None:
