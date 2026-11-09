@@ -19,6 +19,8 @@ class LineInput:
     seats: int | None
     seats_covered: int | None
     named_single_office: bool = False
+    low_confidence: bool = False
+    recorded_confirmation: bool = False
     quantity: str = "1"
 
 

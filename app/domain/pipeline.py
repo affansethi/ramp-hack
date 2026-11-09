@@ -396,6 +396,8 @@ def _write_facts(
                 seats_covered=incoming.seats_covered,
                 named_single_office=incoming.named_single_office,
                 from_bill_to=False,
+                low_confidence=incoming.low_confidence,
+                recorded_confirmation=incoming.recorded_confirmation,
             )
             _add_fact(
                 session,

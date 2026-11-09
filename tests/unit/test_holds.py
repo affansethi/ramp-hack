@@ -41,14 +41,41 @@ def test_signed_catalog_holds_a_missing_location() -> None:
     assert decision.named_fact == "user_location"
 
 
+def _location(**overrides: object) -> str:
+    values: dict[str, object] = {
+        "rung": 1,
+        "seats": 10,
+        "seats_covered": 10,
+        "named_single_office": False,
+        "from_bill_to": False,
+    }
+    values.update(overrides)
+    return location_confirmation(**values)  # type: ignore[arg-type]
+
+
 def test_bill_to_never_confirms_use() -> None:
-    assert (
-        location_confirmation(
-            rung=1,
-            seats=10,
-            seats_covered=10,
-            named_single_office=False,
-            from_bill_to=True,
-        )
-        == "UNCONFIRMED"
-    )
+    assert _location(from_bill_to=True) == "UNCONFIRMED"
+
+
+def test_partial_coverage_and_conflicts_stay_unconfirmed() -> None:
+    assert _location(seats_covered=4) == "UNCONFIRMED"
+    assert _location(conflicting_sources=True) == "UNCONFIRMED"
+
+
+def test_rungs_4_and_5_need_a_named_single_office() -> None:
+    assert _location(rung=4) == "UNCONFIRMED"
+    assert _location(rung=5, named_single_office=True) == "CONFIRMED"
+
+
+def test_rung_3_confirms_only_for_business_location() -> None:
+    assert _location(rung=3) == "UNCONFIRMED"
+    assert _location(rung=3, business_location=True) == "CONFIRMED"
+
+
+def test_low_confidence_needs_recorded_confirmation() -> None:
+    assert _location(low_confidence=True) == "UNCONFIRMED"
+    assert _location(low_confidence=True, recorded_confirmation=True) == "CONFIRMED"
+
+
+def test_omitted_confidence_on_a_full_seat_export_confirms() -> None:
+    assert _location() == "CONFIRMED"

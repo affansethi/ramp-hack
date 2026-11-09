@@ -50,7 +50,7 @@ def _parse_mode[M: StrEnum](
 
 
 def _load_dotenv() -> None:
-    """Fill unset variables from a gitignored `.env`. Never overrides the environment."""
+    """Load unset keys from a gitignored .env file."""
     path = _ROOT / ".env"
     if not path.exists():
         return

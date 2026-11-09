@@ -64,15 +64,23 @@ def location_confirmation(
     seats_covered: int | None,
     named_single_office: bool,
     from_bill_to: bool,
+    low_confidence: bool = False,
+    recorded_confirmation: bool = False,
+    business_location: bool = False,
+    conflicting_sources: bool = False,
 ) -> str:
-    """Bill-to never confirms use. Rungs 4 and 5 need named confirmation."""
-    if from_bill_to or rung is None:
+    """Bill-to never confirms use. Low confidence needs a recorded confirmation."""
+    if from_bill_to or conflicting_sources or rung is None:
         return "UNCONFIRMED"
     if seats is None or seats_covered is None or seats <= 0 or seats_covered != seats:
         return "UNCONFIRMED"
-    if rung in (1, 2, 3):
-        return "CONFIRMED"
-    if rung in (4, 5) and named_single_office:
+    if low_confidence and not recorded_confirmation:
+        return "UNCONFIRMED"
+    if rung in (4, 5):
+        return "CONFIRMED" if named_single_office else "UNCONFIRMED"
+    if rung == 3:
+        return "CONFIRMED" if business_location else "UNCONFIRMED"
+    if rung in (1, 2):
         return "CONFIRMED"
     return "UNCONFIRMED"
 
