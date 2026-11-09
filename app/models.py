@@ -222,6 +222,8 @@ class Determination(Base):
     version: Mapped[int] = mapped_column(Integer, default=1)
     is_current: Mapped[bool] = mapped_column(Boolean, default=True)
     error_code: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    engine_request: Mapped[str | None] = mapped_column(Text, nullable=True)
+    engine_response: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class ReviewDecision(Base):

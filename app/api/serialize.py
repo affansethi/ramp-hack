@@ -1,5 +1,7 @@
 """Read models. Amounts are copied engine strings, or null when there is no result."""
 
+import json
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -206,6 +208,12 @@ def _determination_json(row: Determination) -> dict[str, object]:
         "unit_status": row.unit_status,
         "version": row.version,
         "error_code": row.error_code,
+        "engine_request": json.loads(row.engine_request)
+        if row.engine_request
+        else None,
+        "engine_response": json.loads(row.engine_response)
+        if row.engine_response
+        else None,
     }
 
 

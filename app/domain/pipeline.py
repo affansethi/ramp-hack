@@ -1,6 +1,7 @@
 """Ingest a synthetic purchase and advance it until it stops or waits for review."""
 
-from dataclasses import dataclass
+import json
+from dataclasses import asdict, dataclass
 from datetime import date
 from hashlib import sha256
 from uuid import uuid4
@@ -564,21 +565,19 @@ def _evaluate_one(
     tax = views.get("tax_charged")
     if tax is None or tax.value is None:
         return
-    result = evaluate_line(
-        ruleset,
-        EngineLineRequest(
-            jurisdiction=jurisdiction,
-            category=purchase.category or "",
-            invoice_date=date.fromisoformat(purchase.invoice_date),
-            service_period_start=_optional_date(line.service_period_start),
-            delivery_date=_optional_date(line.delivery_date),
-            line_amount=line.line_amount,
-            tax_charged=tax.value,
-            shipping=line.shipping_amount,
-            location_name=line.location_name or "",
-            state_count=state_count,
-        ),
+    request = EngineLineRequest(
+        jurisdiction=jurisdiction,
+        category=purchase.category or "",
+        invoice_date=date.fromisoformat(purchase.invoice_date),
+        service_period_start=_optional_date(line.service_period_start),
+        delivery_date=_optional_date(line.delivery_date),
+        line_amount=line.line_amount,
+        tax_charged=tax.value,
+        shipping=line.shipping_amount,
+        location_name=line.location_name or "",
+        state_count=state_count,
     )
+    result = evaluate_line(ruleset, request)
     if result.outcome == "supported":
         label: str | None = "ENGINE_SUPPORTED"
         unit_status = "READY_FOR_REVIEW"
@@ -611,8 +610,18 @@ def _evaluate_one(
             version=1,
             is_current=True,
             error_code=result.error_code,
+            engine_request=json.dumps(_request_json(request), sort_keys=True),
+            engine_response=json.dumps(asdict(result), sort_keys=True),
         )
     )
+
+
+def _request_json(request: EngineLineRequest) -> dict[str, object]:
+    fields = asdict(request)
+    for key in ("invoice_date", "service_period_start", "delivery_date"):
+        value = getattr(request, key)
+        fields[key] = value.isoformat() if value is not None else None
+    return fields
 
 
 def _item_nhr(
