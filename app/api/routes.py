@@ -576,7 +576,7 @@ def _filtered_purchases(session: Session, org_id: str, params: QueryParams) -> _
     limit = _page_limit(params)
     hold = _hold_filter(params)
     period = _query_value(params, "period")
-    if period is not None and not _PERIOD_RE.match(period):
+    if period is not None and not _PERIOD_RE.fullmatch(period):
         raise DomainError("BAD_REQUEST", "Unknown period.", 422)
     label = _query_value(params, "label")
     if label is not None and label not in _LABELS:
@@ -656,7 +656,10 @@ def _filtered_purchases(session: Session, org_id: str, params: QueryParams) -> _
     start = 0
     if cursor is not None:
         if cursor.isdigit():
-            start = int(cursor)
+            try:
+                start = int(cursor)
+            except ValueError:
+                raise DomainError("BAD_REQUEST", "Unknown cursor.", 422) from None
             if start < 0 or start > len(kept):
                 raise DomainError("BAD_REQUEST", "Unknown cursor.", 422)
         else:

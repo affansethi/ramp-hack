@@ -410,6 +410,31 @@ def test_cursor_survives_filter_change_after_approve(tmp_path: Path) -> None:
         assert not first_ids & second_ids
 
 
+def test_malformed_period_values_are_422(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        _login(client)
+        _run(client, "case1", "malformed-period-seed")
+        for query in (
+            "?period=2026Q4%0A",
+            "?period=2026Q4 ",
+            "?period=2026Q45",
+            "?period=26Q4",
+            "?period=2026Q0",
+            "?period=2026Q5",
+        ):
+            response = _listing_raw(client, query)
+            assert response.status_code == 422, query
+
+
+def test_invalid_numeric_cursor_is_422(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        _login(client)
+        _run(client, "case1", "bad-cursor-seed")
+        for query in ("?cursor=%C2%B2", "?cursor=999999999"):
+            response = _listing_raw(client, query)
+            assert response.status_code == 422, query
+
+
 def test_unknown_values_are_422(tmp_path: Path) -> None:
     with _client(tmp_path) as client:
         _login(client)
