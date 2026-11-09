@@ -2,7 +2,8 @@
 
 import csv
 import io
-from datetime import date
+import json
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from hashlib import sha256
 from uuid import uuid4
@@ -710,6 +711,40 @@ def _audit(
     object_id: str,
     version: int,
 ) -> None:
+    # Flush pending command events too, so multiple writes in one transaction chain.
+    session.flush()
+    previous = session.scalar(
+        select(AuditEvent)
+        .where(
+            AuditEvent.org_id == org_id,
+            AuditEvent.object_type == object_type,
+            AuditEvent.object_id == object_id,
+        )
+        .order_by(AuditEvent.created_at.desc(), AuditEvent.id.desc())
+        .limit(1)
+    )
+    identity = json.dumps(
+        {
+            "object_type": object_type,
+            "object_id": object_id,
+            "object_version": version,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    created_at = datetime.now(UTC)
+    if previous is not None:
+        previous_time = datetime.fromisoformat(
+            previous.created_at.replace("Z", "+00:00")
+        )
+        # Legacy timestamps have second precision: their trailing Z sorts after
+        # fractional timestamps in the same second, so move beyond that second.
+        step = (
+            timedelta(microseconds=1)
+            if "." in previous.created_at
+            else timedelta(seconds=1)
+        )
+        created_at = max(created_at, previous_time + step)
     session.add(
         AuditEvent(
             id=str(uuid4()),
@@ -719,7 +754,11 @@ def _audit(
             object_type=object_type,
             object_id=object_id,
             object_version=version,
-            created_at=utcnow(),
+            before_hash=(previous.after_hash or "") if previous is not None else "",
+            after_hash=sha256(identity.encode("utf-8")).hexdigest(),
+            created_at=created_at.isoformat(timespec="microseconds").replace(
+                "+00:00", "Z"
+            ),
         )
     )
 
