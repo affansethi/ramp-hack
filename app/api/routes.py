@@ -239,13 +239,14 @@ def demo_event(body: ScenarioBody, request: Request, session: Db) -> dict[str, o
 @router.post("/webhooks/ramp")
 async def webhook(request: Request, session: Db) -> JSONResponse:
     raw = await request.body()
+    secret = request.app.state.settings.ramp_webhook_secret
+    header = request.headers.get("x-ramp-signature", "")
+    if not signature_matches(raw, header, secret):
+        raise DomainError("BAD_SIGNATURE", "X-Ramp-Signature did not match.", 401)
     key = _key(request)
     stored = begin(session, ORG_ID, key, raw.decode("utf-8"))
     if stored is not None:
         return JSONResponse(stored)
-    secret = request.app.state.settings.ramp_webhook_secret
-    header = request.headers.get("x-ramp-signature", "")
-    ok = signature_matches(raw, header, secret)
     try:
         payload_in = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -276,30 +277,6 @@ async def webhook(request: Request, session: Db) -> JSONResponse:
     transaction_id = transaction.get("id")
     if not isinstance(transaction_id, str):
         transaction_id = event_id
-    if not ok:
-        ingest_webhook(
-            session,
-            ORG_ID,
-            event_id=event_id,
-            transaction_id=transaction_id,
-            vendor=vendor,
-            amount=amount,
-            currency=currency,
-            invoice_date=invoice_date,
-            signature_ok=False,
-        )
-        return JSONResponse(
-            status_code=401,
-            content={
-                "error": {
-                    "code": "BAD_SIGNATURE",
-                    "message": "X-Ramp-Signature did not match.",
-                    "field_errors": [],
-                    "retryable": False,
-                    "correlation_id": uuid4().hex,
-                }
-            },
-        )
     result = ingest_webhook(
         session,
         ORG_ID,

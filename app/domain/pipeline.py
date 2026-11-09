@@ -83,22 +83,7 @@ def ingest_webhook(
     signature_ok: bool,
 ) -> IngestResult:
     if not signature_ok:
-        existing = _find_event(session, org_id, event_id)
-        if existing is None:
-            event = SourceEvent(
-                id=str(uuid4()),
-                org_id=org_id,
-                source="ramp",
-                external_event_id=event_id,
-                payload_hash=_hash(event_id),
-                signature_result="BAD_SIGNATURE",
-                purchase_id=None,
-                created_at=utcnow(),
-            )
-            session.add(event)
-            session.flush()
-            return IngestResult(None, None, False, event.id)
-        return IngestResult(existing.purchase_id, None, True, existing.id)
+        raise DomainError("BAD_SIGNATURE", "X-Ramp-Signature did not match.", 401)
     if currency != "USD":
         raise DomainError("UNSUPPORTED_CURRENCY", "Only USD is in the demo.", 422)
     line = LineInput(

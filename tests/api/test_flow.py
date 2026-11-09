@@ -8,9 +8,12 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
 from app.config import load_settings
 from app.main import create_app
+from app.models import Job, Purchase, SourceEvent
 from app.worker.poller import poll_once
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -222,6 +225,32 @@ def test_bad_signature_stores_nothing_payable(tmp_path: Path) -> None:
         )
         assert bad.status_code == 401
         assert bad.json()["error"]["code"] == "BAD_SIGNATURE"
+        replayed = client.post(
+            "/api/v1/webhooks/ramp",
+            content=raw,
+            headers={
+                "Idempotency-Key": "bad",
+                "X-Ramp-Signature": "sha256=nope",
+                "Content-Type": "application/json",
+            },
+        )
+        assert replayed.status_code == 401
+        assert replayed.json()["error"]["code"] == "BAD_SIGNATURE"
+        not_json = client.post(
+            "/api/v1/webhooks/ramp",
+            content=b"not-json",
+            headers={
+                "Idempotency-Key": "bad-json",
+                "X-Ramp-Signature": "sha256=nope",
+                "Content-Type": "application/json",
+            },
+        )
+        assert not_json.status_code == 401
+        assert not_json.json()["error"]["code"] == "BAD_SIGNATURE"
+        assert _count(client, SourceEvent) == 0
+        assert _count(client, Purchase) == 0
+        assert _count(client, Job) == 0
+        assert _event(client, "evt_bad") is None
         digest = hmac.new(b"test-secret", raw, hashlib.sha256).hexdigest()
         good = client.post(
             "/api/v1/webhooks/ramp",
@@ -233,8 +262,51 @@ def test_bad_signature_stores_nothing_payable(tmp_path: Path) -> None:
             },
         )
         assert good.status_code == 200, good.text
+        same_event = client.post(
+            "/api/v1/webhooks/ramp",
+            content=raw,
+            headers={
+                "Idempotency-Key": "good-again",
+                "X-Ramp-Signature": f"sha256={digest}",
+                "Content-Type": "application/json",
+            },
+        )
+        assert same_event.status_code == 200, same_event.text
+        assert same_event.json()["purchase_id"] == good.json()["purchase_id"]
+        assert same_event.json()["duplicate"] is True
+        assert _count(client, Purchase) == 1
+        assert _count(client, Job) == 1
+        stored = _event(client, "evt_bad")
+        assert stored is not None
+        assert stored.signature_result == "OK"
         assert poll_once(client.app.state.ctx) == 1
         client.post("/api/v1/demo/login", json={}, headers=_headers("login-hook"))
-        detail = client.get(f"/api/v1/purchases/{good.json()['purchase_id']}").json()
+        detail = client.get(
+            f"/api/v1/purchases/{good.json()['purchase_id']}",
+            headers=_headers("read-hook"),
+        ).json()
         assert detail["determinations"] == []
         assert detail["queue"] == "held"
+
+
+def _count(client: TestClient, model: type[object]) -> int:
+    session = _open(client)
+    try:
+        found = session.scalar(select(func.count()).select_from(model))
+        return int(found or 0)
+    finally:
+        session.close()
+
+
+def _event(client: TestClient, event_id: str) -> SourceEvent | None:
+    session = _open(client)
+    try:
+        return session.scalar(
+            select(SourceEvent).where(SourceEvent.external_event_id == event_id)
+        )
+    finally:
+        session.close()
+
+
+def _open(client: TestClient) -> Session:
+    return client.app.state.ctx.session_factory()
