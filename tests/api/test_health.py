@@ -46,11 +46,11 @@ def test_health_storage_unavailable_when_check_raises(monkeypatch) -> None:
     from app.adapters import storage
 
     class Broken:
-        def get_container_properties(self):
+        def get_container_properties(self, **kwargs):
             raise RuntimeError("down")
 
     monkeypatch.setenv("AZURE_STORAGE_ACCOUNT_URL", "https://example.invalid")
-    monkeypatch.setattr(storage, "_container", lambda: Broken())
+    monkeypatch.setattr(storage, "_probe_container", lambda: Broken())
     response = TestClient(create_app()).get("/health")
     assert response.status_code == 200
     assert response.json()["storage"] == "unavailable"

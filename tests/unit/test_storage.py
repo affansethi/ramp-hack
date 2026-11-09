@@ -63,6 +63,7 @@ def test_disabled_every_function_raises(disabled) -> None:
         lambda: storage.upload("a", b"x"),
         lambda: storage.download("a"),
         lambda: storage.get("a"),
+        lambda: storage.check_container(),
         lambda: storage.put_document(b"x", "text/plain"),
         lambda: storage.put_export("w", 1, "f", b"x", "csv"),
     ]
@@ -113,3 +114,27 @@ def test_app_service_enables_with_default_url(monkeypatch) -> None:
     storage.list_files()
     assert seen["url"] == storage.DEFAULT_ACCOUNT_URL
     storage._build_container.cache_clear()
+
+
+def test_probe_client_has_no_retries_and_short_timeouts(monkeypatch) -> None:
+    for v in ENV:
+        monkeypatch.delenv(v, raising=False)
+    monkeypatch.setenv("AZURE_STORAGE_ACCOUNT_URL", "https://probe.invalid")
+    seen = {}
+
+    class Client:
+        def __init__(self, url, **kw):
+            seen.update(kw)
+
+        def get_container_client(self, name):
+            return object()
+
+    monkeypatch.setattr(storage, "DefaultAzureCredential", lambda: "cred")
+    monkeypatch.setattr(storage, "BlobServiceClient", Client)
+    storage._build_probe_container.cache_clear()
+    try:
+        storage._probe_container()
+    finally:
+        storage._build_probe_container.cache_clear()
+    assert seen["retry_total"] == 0
+    assert seen["connection_timeout"] <= 5 and seen["read_timeout"] <= 5

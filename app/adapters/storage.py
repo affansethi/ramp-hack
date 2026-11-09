@@ -65,12 +65,31 @@ def _container() -> ContainerClient:
     return _build_container(url, _container_name())
 
 
+@lru_cache(maxsize=4)
+def _build_probe_container(account_url: str, container_name: str) -> ContainerClient:
+    # No retries and short timeouts so an unreachable account cannot stall /health.
+    client = BlobServiceClient(
+        account_url,
+        credential=DefaultAzureCredential(),
+        retry_total=0,
+        connection_timeout=2,
+        read_timeout=3,
+    )
+    return client.get_container_client(container_name)
+
+
+def _probe_container() -> ContainerClient:
+    url = _account_url()
+    if url is None:
+        raise StorageUnavailable("Blob storage is not configured")
+    return _build_probe_container(url, _container_name())
+
+
 def check_container() -> bool:
-    """Cheap reachability check; False when disabled or the call fails."""
-    if not storage_enabled():
-        return False
+    """Cheap, bounded reachability check; False when the call fails."""
+    container = _probe_container()
     try:
-        _container().get_container_properties()
+        container.get_container_properties(timeout=3)
     except Exception:
         return False
     return True
