@@ -130,7 +130,8 @@ def _header(request: Request) -> None:
 
 
 def _viewer(request: Request, session: Session) -> DemoSession:
-    _header(request)
+    if request.method != "GET":
+        _header(request)
     row = session.get(DemoSession, request.cookies.get(COOKIE, ""))
     if row is None:
         raise DomainError("UNAUTHORIZED", "Sign in.", 401)
