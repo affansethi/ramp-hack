@@ -65,6 +65,8 @@ class AuditEvent(Base):
     object_type: Mapped[str] = mapped_column(String(80))
     object_id: Mapped[str] = mapped_column(String(36))
     object_version: Mapped[int] = mapped_column(Integer)
+    before_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    after_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[str] = mapped_column(String(32))
 
 

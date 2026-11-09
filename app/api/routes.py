@@ -8,7 +8,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import delete, select
+from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.orm import Session
 
 from app.adapters.ramp import signature_matches
@@ -311,6 +311,56 @@ def job(job_id: str, request: Request, session: Db) -> dict[str, object]:
         "purchase_id": row.purchase_id,
         "attempts": row.attempts,
         "error_code": row.error_code,
+    }
+
+
+@router.get("/audit-events")
+def audit_events(
+    request: Request,
+    session: Db,
+    object_id: str | None = None,
+    cursor: str | None = None,
+) -> dict[str, object]:
+    viewer = _viewer(request, session)
+    query = select(AuditEvent).where(AuditEvent.org_id == viewer.org_id)
+    if object_id is not None:
+        query = query.where(AuditEvent.object_id == object_id)
+    if cursor is not None:
+        anchor = session.scalar(query.where(AuditEvent.id == cursor))
+        if anchor is None:
+            raise DomainError("NOT_FOUND", "Audit cursor not found.", 404)
+        query = query.where(
+            or_(
+                AuditEvent.created_at > anchor.created_at,
+                and_(
+                    AuditEvent.created_at == anchor.created_at,
+                    AuditEvent.id > anchor.id,
+                ),
+            )
+        )
+    rows = list(
+        session.scalars(
+            query.order_by(AuditEvent.created_at, AuditEvent.id).limit(101)
+        ).all()
+    )
+    page = rows[:100]
+    return {
+        **meta(request.app.state.settings),
+        "audit_events": [
+            {
+                "id": row.id,
+                "actor_id": row.actor_id,
+                "command": row.command,
+                "object_type": row.object_type,
+                "object_id": row.object_id,
+                "object_version": row.object_version,
+                "before_hash": row.before_hash,
+                "after_hash": row.after_hash,
+                "created_at": row.created_at,
+            }
+            for row in page
+        ],
+        "next_cursor": page[-1].id if len(rows) > 100 else None,
     }
 
 
