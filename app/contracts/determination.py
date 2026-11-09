@@ -5,9 +5,14 @@ Live JSON is exactly the fields on ``DeterminationRead``. ``data_mode`` and
 ``service_period_start`` stays on the purchase line. This model has no
 ``evidence_ids``.
 
+``engine_request`` and ``engine_response`` are the stored engine trail,
+returned read-only. They are null when that row has no trail.
+
 ``ILLUSTRATIVE_SPEC_CASE_1`` quotes Technical Spec v2 §7. It is illustrative
 only: not a golden and not a live row. Do not assert it against API responses.
 """
+
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
@@ -64,3 +69,5 @@ class DeterminationRead(BaseModel):
     unit_status: str
     version: int
     error_code: str | None
+    engine_request: dict[str, Any] | None = None
+    engine_response: dict[str, Any] | None = None

@@ -47,6 +47,8 @@ _DETERMINATION_KEYS = {
     "unit_status",
     "version",
     "error_code",
+    "engine_request",
+    "engine_response",
 }
 
 _BANNED = {"net", "savings", "recovered"}
@@ -110,6 +112,8 @@ def test_determination_json_keeps_its_keys_and_copies_decimal_strings() -> None:
     assert isinstance(payload["engine_amount"]["value"], str)
     assert payload["rate"] == "0.1055"
     assert payload["rule_reference"] == "WA-RAS-001"
+    assert payload["engine_request"] is None
+    assert payload["engine_response"] is None
     assert "data_mode" not in payload
     assert "engine_mode" not in payload
     assert "service_period_start" not in payload

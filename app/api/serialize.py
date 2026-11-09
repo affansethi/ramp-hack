@@ -1,6 +1,7 @@
 """Read models. Amounts are copied engine strings, or null when there is no result."""
 
-from typing import cast
+import json
+from typing import Any, cast
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -197,6 +198,16 @@ def _supported_money(supported: bool, value: str | None) -> Money | None:
     return Money.model_validate({"value": value, "currency": "USD"})
 
 
+def _stored_object(raw: str | None) -> dict[str, Any] | None:
+    """Parse a stored engine-trail JSON object. Null when the row has none."""
+    if not raw:
+        return None
+    loaded: Any = json.loads(raw)
+    if not isinstance(loaded, dict):
+        raise TypeError("engine trail must be a JSON object")
+    return {str(key): value for key, value in loaded.items()}
+
+
 def _determination_json(row: Determination) -> dict[str, object]:
     supported = row.label == "ENGINE_SUPPORTED"
     body = DeterminationRead(
@@ -218,6 +229,8 @@ def _determination_json(row: Determination) -> dict[str, object]:
         unit_status=row.unit_status,
         version=row.version,
         error_code=row.error_code,
+        engine_request=_stored_object(row.engine_request),
+        engine_response=_stored_object(row.engine_response),
     )
     return cast(dict[str, object], body.model_dump(mode="json"))
 
