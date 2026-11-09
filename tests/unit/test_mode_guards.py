@@ -6,6 +6,7 @@ import pytest
 
 from app.config import ModeGuardError, load_settings
 from app.contracts import DataMode, EngineMode, LLMMode
+from app.main import create_app
 
 GOOD_ENV = {
     "DATA_MODE": "synthetic",
@@ -36,6 +37,54 @@ def test_refuses_non_synthetic_data_mode() -> None:
 def test_refuses_non_mock_engine_mode() -> None:
     with pytest.raises(ModeGuardError, match="ENGINE_MODE"):
         load_settings({**GOOD_ENV, "ENGINE_MODE": "live_ruleset"})
+
+
+def test_refuses_unset_engine_mode() -> None:
+    env = {k: v for k, v in GOOD_ENV.items() if k != "ENGINE_MODE"}
+    with pytest.raises(ModeGuardError, match="ENGINE_MODE"):
+        load_settings(env)
+
+
+@pytest.mark.parametrize("mode", ["Synthetic", "SYNTHETIC", " synthetic", "synthetic "])
+def test_refuses_data_mode_case_and_spacing_variants(mode: str) -> None:
+    with pytest.raises(ModeGuardError, match="DATA_MODE"):
+        load_settings({**GOOD_ENV, "DATA_MODE": mode})
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "MOCK_REVIEWED_RULESET",
+        "Mock_Reviewed_Ruleset",
+        " mock_reviewed_ruleset",
+        "mock_reviewed_ruleset ",
+    ],
+)
+def test_refuses_engine_mode_case_and_spacing_variants(mode: str) -> None:
+    with pytest.raises(ModeGuardError, match="ENGINE_MODE"):
+        load_settings({**GOOD_ENV, "ENGINE_MODE": mode})
+
+
+def test_create_app_refuses_production_data_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DATA_MODE", "synthetic")
+    monkeypatch.setenv("ENGINE_MODE", "mock_reviewed_ruleset")
+    monkeypatch.setenv("DEMO_MODE", "true")
+    monkeypatch.setenv("DATA_MODE", "production")
+    with pytest.raises(ModeGuardError, match="DATA_MODE"):
+        create_app()
+
+
+def test_create_app_refuses_live_engine_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DATA_MODE", "synthetic")
+    monkeypatch.setenv("ENGINE_MODE", "mock_reviewed_ruleset")
+    monkeypatch.setenv("DEMO_MODE", "true")
+    monkeypatch.setenv("ENGINE_MODE", "live_ruleset")
+    with pytest.raises(ModeGuardError, match="ENGINE_MODE"):
+        create_app()
 
 
 @pytest.mark.parametrize("mode", ["live", "record", "replay"])
