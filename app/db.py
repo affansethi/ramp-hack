@@ -25,10 +25,12 @@ def make_session_factory(engine: Engine) -> sessionmaker[Session]:
 
 def init_database(url: str) -> sessionmaker[Session]:
     from app import models  # noqa: F401  (register tables)
+    from app.migrations import upgrade_audit_hashes
     from app.seed import seed
 
     engine = make_engine(url)
     Base.metadata.create_all(engine)
+    upgrade_audit_hashes(engine)
     factory = make_session_factory(engine)
     with session_scope(factory) as session:
         seed(session)
