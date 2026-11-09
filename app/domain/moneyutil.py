@@ -1,6 +1,6 @@
 """Decimal helpers. Facts keep their printed strings. Only the engine quantizes."""
 
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import Decimal
 
 CENT = Decimal("0.01")
 ONE_CENT = Decimal("0.01")
@@ -15,9 +15,14 @@ def parse_decimal(value: str) -> Decimal:
     return amount
 
 
-def emit_cents(amount: Decimal) -> str:
-    """The engine's one rounding step: half-up to a two-decimal USD string."""
-    return f"{amount.quantize(CENT, rounding=ROUND_HALF_UP):.2f}"
+def emit_cents(amount: Decimal) -> str | None:
+    """Two-decimal string when the amount is already an exact cent. Never rounds."""
+    if not amount.is_finite():
+        return None
+    cents = amount.quantize(CENT)
+    if cents != amount:
+        return None
+    return f"{cents:.2f}"
 
 
 def differs_by_more_than_one_cent(left: str, right: str) -> bool:

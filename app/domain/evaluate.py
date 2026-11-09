@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal, InvalidOperation
 from typing import Literal
 
 from app.domain.moneyutil import emit_cents, parse_decimal
@@ -60,23 +61,35 @@ def evaluate_line(ruleset: Ruleset, request: EngineLineRequest) -> EngineLineRes
             return _unsupported("RULE_TRANSITION_UNRESOLVED")
         return _unsupported("ENGINE_UNSUPPORTED")
     rule = active[0]
+    if rule.applies_when == "multi_state" and rule.calculation == "net":
+        return _unsupported("ENGINE_UNSUPPORTED")
+    rate_row = _find_rate(ruleset, request)
+    if rate_row is None or _blank(rate_row.rate):
+        return _error("MISSING_RATE_REFERENCE")
     if rule.calculation == "not_taxable":
         expected = "0.00"
-        rate_row = _find_rate(ruleset, request)
     else:
-        rate_row = _find_rate(ruleset, request)
-        if rate_row is None:
-            return _error("MISSING_RATE_REFERENCE")
-        base = parse_decimal(request.line_amount)
+        base = _money(request.line_amount)
+        rate = _money(rate_row.rate)
+        if base is None or rate is None:
+            return _error("INEXACT_CENTS")
         if rule.calculation == "net_plus_shipping":
             if request.shipping is None:
                 return _error("MISSING_SHIPPING_FACT")
-            base += parse_decimal(request.shipping)
-        expected = emit_cents(base * parse_decimal(rate_row.rate))
-    if rate_row is None and rule.calculation == "not_taxable":
-        return _error("MISSING_RATE_REFERENCE")
-    assert rate_row is not None
-    direction, adjustment = _direction(expected, request.tax_charged)
+            shipping = _money(request.shipping)
+            if shipping is None:
+                return _error("INEXACT_CENTS")
+            base += shipping
+        rendered = emit_cents(base * rate)
+        if rendered is None:
+            return _error("INEXACT_CENTS")
+        expected = rendered
+    if _blank(rule.id) or _blank(rate_row.location_code):
+        return _error("INCOMPLETE_ENGINE_RESULT")
+    directed = _direction(expected, request.tax_charged)
+    if directed is None:
+        return _error("INEXACT_CENTS")
+    direction, adjustment = directed
     return EngineLineResult(
         outcome="supported",
         nhr_reason=None,
@@ -128,14 +141,31 @@ def _find_rate(ruleset: Ruleset, request: EngineLineRequest) -> RateEntry | None
     return None
 
 
-def _direction(expected: str, tax_charged: str) -> tuple[str, str | None]:
-    expected_amount = parse_decimal(expected)
-    charged = parse_decimal(tax_charged)
+def _blank(value: str | None) -> bool:
+    return value is None or not value.strip()
+
+
+def _money(value: str) -> Decimal | None:
+    try:
+        return parse_decimal(value)
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _direction(expected: str, tax_charged: str) -> tuple[str, str | None] | None:
+    expected_amount = _money(expected)
+    charged = _money(tax_charged)
+    if expected_amount is None or charged is None:
+        return None
     if expected_amount == charged:
         return "CHARGED_CORRECTLY", None
+    difference = abs(expected_amount - charged)
+    rendered = emit_cents(difference)
+    if rendered is None:
+        return None
     if expected_amount > charged:
-        return "LIABILITY", emit_cents(expected_amount - charged)
-    return "REFUND_CANDIDATE", emit_cents(charged - expected_amount)
+        return "LIABILITY", rendered
+    return "REFUND_CANDIDATE", rendered
 
 
 def _unsupported(reason: str) -> EngineLineResult:

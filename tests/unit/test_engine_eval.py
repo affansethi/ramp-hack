@@ -1,9 +1,12 @@
 """Evaluator: unsigned rules never emit an amount. A reviewed rule's string is exact."""
 
+from dataclasses import replace
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
 
-from app.domain.evaluate import EngineLineRequest, evaluate_line
+from app.domain.evaluate import EngineLineRequest, EngineLineResult, evaluate_line
+from app.domain.moneyutil import emit_cents
 from app.domain.ruleset import (
     RateEntry,
     RuleEntry,
@@ -108,3 +111,155 @@ def test_january_2027_transition_is_nhr_with_no_amount() -> None:
     assert result.nhr_reason == "RULE_TRANSITION_UNRESOLVED"
     assert result.adjustment_amount is None
     assert result.expected_tax is None
+
+
+def _no_amount(result: EngineLineResult) -> None:
+    assert result.expected_tax is None
+    assert result.adjustment_amount is None
+    assert result.direction is None
+    assert result.nhr_reason is None
+
+
+def test_emit_cents_keeps_exact_cents_and_refuses_to_round() -> None:
+    assert emit_cents(Decimal("151.92")) == "151.92"
+    assert emit_cents(Decimal("186.375")) is None
+
+
+def test_inexact_product_is_an_error_with_no_amount() -> None:
+    ruleset = _reviewed_ruleset()
+    ruleset = Ruleset(
+        rules=ruleset.rules,
+        rates=(replace(ruleset.rates[0], rate="0.08875"),),
+        catalog=ruleset.catalog,
+        version=ruleset.version,
+    )
+    result = evaluate_line(ruleset, _wa_request(line_amount="2100.00"))
+    assert result.outcome == "error"
+    assert result.error_code == "INEXACT_CENTS"
+    _no_amount(result)
+
+
+def test_inexact_difference_is_an_error_with_no_amount() -> None:
+    result = evaluate_line(_reviewed_ruleset(), _wa_request(tax_charged="1.005"))
+    assert result.outcome == "error"
+    assert result.error_code == "INEXACT_CENTS"
+    _no_amount(result)
+
+
+def test_not_taxable_uses_zero_instead_of_the_rate() -> None:
+    ruleset = _reviewed_ruleset()
+    ruleset = Ruleset(
+        rules=(replace(ruleset.rules[0], calculation="not_taxable"),),
+        rates=ruleset.rates,
+        catalog=ruleset.catalog,
+        version=ruleset.version,
+    )
+    charged_zero = evaluate_line(ruleset, _wa_request())
+    assert charged_zero.outcome == "supported"
+    assert charged_zero.expected_tax == "0.00"
+    assert charged_zero.adjustment_amount is None
+    assert charged_zero.direction == "CHARGED_CORRECTLY"
+    charged = evaluate_line(ruleset, _wa_request(tax_charged="83.00"))
+    assert charged.outcome == "supported"
+    assert charged.expected_tax == "0.00"
+    assert charged.adjustment_amount == "83.00"
+    assert charged.direction == "REFUND_CANDIDATE"
+
+
+def test_location_code_na_is_present_and_blank_is_an_error() -> None:
+    ruleset = _reviewed_ruleset()
+    present = Ruleset(
+        rules=ruleset.rules,
+        rates=(replace(ruleset.rates[0], location_code="n/a"),),
+        catalog=ruleset.catalog,
+        version=ruleset.version,
+    )
+    result = evaluate_line(present, _wa_request())
+    assert result.outcome == "supported"
+    assert result.location_code == "n/a"
+    assert result.expected_tax == "151.92"
+    blank = Ruleset(
+        rules=ruleset.rules,
+        rates=(replace(ruleset.rates[0], location_code=""),),
+        catalog=ruleset.catalog,
+        version=ruleset.version,
+    )
+    missing = evaluate_line(blank, _wa_request())
+    assert missing.outcome == "error"
+    assert missing.error_code == "INCOMPLETE_ENGINE_RESULT"
+    _no_amount(missing)
+
+
+def test_blank_rule_id_or_rate_is_an_error_with_no_amount() -> None:
+    ruleset = _reviewed_ruleset()
+    no_id = Ruleset(
+        rules=(replace(ruleset.rules[0], id=""),),
+        rates=ruleset.rates,
+        catalog=ruleset.catalog,
+        version=ruleset.version,
+    )
+    missing_id = evaluate_line(no_id, _wa_request())
+    assert missing_id.outcome == "error"
+    _no_amount(missing_id)
+    no_rate = Ruleset(
+        rules=ruleset.rules,
+        rates=(replace(ruleset.rates[0], rate=" "),),
+        catalog=ruleset.catalog,
+        version=ruleset.version,
+    )
+    missing_rate = evaluate_line(no_rate, _wa_request())
+    assert missing_rate.outcome == "error"
+    _no_amount(missing_rate)
+
+
+def test_multi_state_net_is_unsupported_with_no_amount() -> None:
+    ruleset = _reviewed_ruleset()
+    ruleset = Ruleset(
+        rules=(
+            replace(
+                ruleset.rules[0],
+                id="MEM-MPU",
+                applies_when="multi_state",
+                calculation="net",
+            ),
+        ),
+        rates=ruleset.rates,
+        catalog=ruleset.catalog,
+        version=ruleset.version,
+    )
+    result = evaluate_line(ruleset, _wa_request(state_count=2))
+    assert result.outcome == "unsupported"
+    assert result.nhr_reason == "ENGINE_UNSUPPORTED"
+    assert result.expected_tax is None
+    assert result.adjustment_amount is None
+    assert result.direction is None
+
+
+def test_reviewed_placeholder_never_activates() -> None:
+    rule = replace(
+        _reviewed_ruleset().rules[0],
+        id="PLACEHOLDER:CA-DP-001",
+        jurisdiction="CA",
+        applies_when="any",
+        effective_from=date(2027, 1, 1),
+        timing_basis="service_period_start",
+    )
+    result = evaluate_line(
+        Ruleset(rules=(rule,), rates=(), catalog=(), version="test"),
+        EngineLineRequest(
+            jurisdiction="CA",
+            category="REMOTE_ACCESS_SAAS",
+            invoice_date=date(2026, 12, 15),
+            service_period_start=date(2027, 1, 1),
+            delivery_date=None,
+            line_amount="962.32",
+            tax_charged="83.00",
+            shipping=None,
+            location_name="San Francisco, CA",
+            state_count=1,
+        ),
+    )
+    assert result.outcome == "unsupported"
+    assert result.nhr_reason == "RULE_TRANSITION_UNRESOLVED"
+    assert result.expected_tax is None
+    assert result.adjustment_amount is None
