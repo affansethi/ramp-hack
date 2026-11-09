@@ -6,6 +6,7 @@ Authoritative docs:
 
 - [docs/spec/](docs/spec/) — Design Spec (product rules) and Technical Spec **v2** (build plan; the v1.5 section is superseded — never implement it)
 - [docs/architecture.md](docs/architecture.md) — stack and module map
+- [docs/glossary.md](docs/glossary.md) — domain terms used in both specs
 - [docs/decisions.md](docs/decisions.md) — why
 
 **Live:** https://ramphack-affan.azurewebsites.net (free tier — the first request after idle can take 30+ seconds to wake up.)
@@ -24,7 +25,7 @@ app/
 rules/               rule entries, S3 catalog, rate tables (owner-authored)
 fixtures/            synthetic documents, expected results, recordings
 tests/               unit/, rules/, gates/, api/, eval/
-docs/                specs, architecture, decisions
+docs/                specs, glossary, architecture, decisions
 ```
 
 ## Local setup
