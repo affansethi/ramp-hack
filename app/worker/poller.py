@@ -2,9 +2,12 @@
 
 import logging
 import threading
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, or_, select, update
+from sqlalchemy.orm import Session
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.clock import utcnow
 from app.context import AppContext
@@ -33,63 +36,124 @@ def poll_once(ctx: AppContext) -> int:
         _lock.release()
 
 
+def _claimable(now: str) -> ColumnElement[bool]:
+    return or_(
+        Job.status == "QUEUED",
+        and_(Job.status == "RUNNING", Job.lease_until < now),
+    )
+
+
+def _claim(session: Session) -> Job | None:
+    now = utcnow()
+    lease = (datetime.now(UTC) + timedelta(seconds=60)).replace(microsecond=0)
+    candidate = (
+        select(Job.id)
+        .where(_claimable(now))
+        .order_by(Job.created_at, Job.id)
+        .limit(1)
+        .scalar_subquery()
+    )
+    # Recheck eligibility in the UPDATE, including after another caller claims
+    # the selected row. Only the caller receiving a row owns this attempt.
+    job = session.scalar(
+        update(Job)
+        .where(Job.id == candidate, _claimable(now))
+        .values(
+            status="RUNNING",
+            lease_until=lease.isoformat().replace("+00:00", "Z"),
+            attempts=Job.attempts + 1,
+            error_code=None,
+        )
+        .returning(Job)
+    )
+    session.commit()
+    return job
+
+
+def _advance(ctx: AppContext, session: Session, job: Job) -> None:
+    if job.purchase_id is None:
+        raise ValueError("advance job requires a purchase")
+    advance_purchase(session, job.purchase_id, load_ruleset(ctx.rules_dir))
+
+
+# Fetch and import handlers can be added here without changing the claim query.
+_HANDLERS: dict[str, Callable[[AppContext, Session, Job], None]] = {
+    "advance": _advance,
+}
+
+
+def _owned(job: Job) -> ColumnElement[bool]:
+    return and_(
+        Job.id == job.id,
+        Job.status == "RUNNING",
+        Job.attempts == job.attempts,
+        Job.lease_until == job.lease_until,
+    )
+
+
 def _poll(ctx: AppContext) -> int:
     session = ctx.session_factory()
-    job_id: str | None = None
+    job: Job | None = None
+    error_code = "ADVANCE_FAILED"
+    claim: tuple[str, int, str | None] | None = None
     try:
-        lease = (datetime.now(UTC) + timedelta(seconds=60)).replace(microsecond=0)
-        now = utcnow()
-        job = session.scalar(
-            select(Job)
-            .where(
-                or_(
-                    Job.status == "QUEUED",
-                    and_(
-                        Job.status == "RUNNING",
-                        Job.lease_until.is_not(None),
-                        Job.lease_until < now,
-                    ),
-                )
-            )
-            .order_by(Job.created_at)
-            .limit(1)
+        job = _claim(session)
+        if job is None:
+            return 0
+        claim = (job.id, job.attempts, job.lease_until)
+        # Lock and fence this attempt before writing results. A stale worker
+        # cannot complete or fail an attempt reclaimed by another worker.
+        owned = session.scalar(
+            update(Job).where(_owned(job)).values(status="RUNNING").returning(Job.id)
         )
-        if job is None or job.purchase_id is None:
+        if owned is None:
             session.rollback()
             return 0
-        job_id = job.id
-        job.status = "RUNNING"
-        job.lease_until = lease.isoformat().replace("+00:00", "Z")
-        job.attempts += 1
-        ruleset = load_ruleset(ctx.rules_dir)
-        advance_purchase(session, job.purchase_id, ruleset)
+        handler = _HANDLERS.get(job.kind)
+        if handler is None:
+            error_code = "UNKNOWN_JOB_KIND"
+            raise ValueError(f"unknown job kind: {job.kind}")
+        if job.kind != "advance":
+            error_code = "JOB_FAILED"
+        handler(ctx, session, job)
         job.status = "SUCCEEDED"
         job.lease_until = None
         session.commit()
         return 1
     except Exception:
-        log.exception("job %s failed", job_id)
+        log.exception("job %s failed", claim[0] if claim else None)
         session.rollback()
-        if job_id is not None:
-            _note_failure(ctx, job_id)
+        if claim is not None:
+            _note_failure(ctx, *claim, error_code=error_code)
         return 0
     finally:
         session.close()
 
 
-def _note_failure(ctx: AppContext, job_id: str) -> None:
-    session = ctx.session_factory()
-    try:
-        job = session.get(Job, job_id)
-        if job is None:
-            return
-        job.attempts += 1
-        job.error_code = "ADVANCE_FAILED"
-        job.status = "FAILED" if job.attempts >= 3 else "QUEUED"
-        job.lease_until = None
+def _note_failure(
+    ctx: AppContext,
+    job_id: str,
+    attempt: int,
+    lease_until: str | None,
+    *,
+    error_code: str,
+) -> None:
+    with ctx.session_factory() as session:
+        session.execute(
+            update(Job)
+            .where(
+                Job.id == job_id,
+                Job.status == "RUNNING",
+                Job.attempts == attempt,
+                Job.lease_until == lease_until,
+            )
+            .values(
+                error_code=error_code,
+                status="FAILED" if attempt >= 3 else "QUEUED",
+                lease_until=None,
+            )
+        )
         session.commit()
-    finally:
-        session.close()
 
 
 def run_until_stopped(ctx: AppContext, stop: threading.Event) -> None:
