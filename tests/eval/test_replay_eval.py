@@ -11,9 +11,12 @@ from typing import Any
 
 import pytest
 
+import app.adapters.extractor as extractor_module
 from app.adapters.extractor import (
+    CheckedExtraction,
     ExtractionMiss,
     ForbiddenField,
+    ModelProvider,
     ReplayExtractor,
     cache_key,
     parse_extraction,
@@ -104,6 +107,37 @@ def format_summary(summary: dict[str, str]) -> str:
     )
 
 
+def report_summary(summary: dict[str, str]) -> str:
+    """Print the harness summary to the terminal and return the emitted text."""
+    text = "replay eval: " + format_summary(summary)
+    print(text)
+    return text
+
+
+def eval_terminal_line(*, checked: int) -> str:
+    """The unsigned line the eval session summary emits (see conftest.py)."""
+    return "replay eval: " + format_summary(summarize_replay(checked=checked))
+
+
+def evaluate_replay(
+    document: bytes,
+    saved: dict[str, object],
+    *,
+    provider: ModelProvider,
+    model: str = "recorded",
+) -> CheckedExtraction:
+    """Replay-only eval entry point.
+
+    Serves the saved payload for ``document`` or raises ``ExtractionMiss``.
+    The live ``provider`` is accepted so eval callers can thread one provider
+    through both live and replay runs, but replay never touches it: a miss
+    fails instead of falling back to ``extract_bounded``.
+    """
+    del provider  # replay must not call a provider; the miss test proves it.
+    extractor = ReplayExtractor(saved)
+    return extractor.extract(document, provider="replay", model=model)
+
+
 def test_forbidden_field_payload_fails() -> None:
     for key, payload in _forbidden_payloads():
         with pytest.raises(ForbiddenField) as raised:
@@ -133,23 +167,69 @@ class _NoCallProvider:
         raise AssertionError("replay must not call a provider")
 
 
-def test_replay_miss_fails_and_does_not_call_provider() -> None:
+def test_replay_miss_fails_and_does_not_call_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     provider = _NoCallProvider()
+    fallback_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    def _fail_fallback(*args: object, **kwargs: object) -> CheckedExtraction:
+        fallback_calls.append((args, kwargs))
+        raise AssertionError("replay must not fall back to a live provider call")
+
+    monkeypatch.setattr(extractor_module, "extract_bounded", _fail_fallback)
     document = b"synthetic-invoice-bytes-issue-39"
-    extractor = ReplayExtractor({})
     with pytest.raises(ExtractionMiss):
-        extractor.extract(document, provider="replay", model="recorded")
+        evaluate_replay(document, {}, provider=provider)
     assert provider.calls == 0
+    assert fallback_calls == []
     other_key = cache_key(document, provider="replay", model="recorded")
-    extractor_saved = ReplayExtractor({other_key: _clean_payload()})
-    found = extractor_saved.extract(document, provider="replay", model="recorded")
+    found = evaluate_replay(document, {other_key: _clean_payload()}, provider=provider)
     assert found.call_a.lines[0].line_amount == "1440.00"
+    assert provider.calls == 0
+    assert fallback_calls == []
 
 
-def test_summary_says_unsigned_for_accuracy_and_precision() -> None:
+def test_summary_says_unsigned_for_accuracy_and_precision(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     summary = summarize_replay(checked=2)
     assert summary["accuracy"] == "unsigned"
     assert summary["precision"] == "unsigned"
-    text = format_summary(summary)
-    assert "accuracy: unsigned" in text
-    assert "precision: unsigned" in text
+    text = report_summary(summary)
+    emitted = capsys.readouterr().out
+    assert "accuracy: unsigned" in emitted
+    assert "precision: unsigned" in emitted
+    assert text in emitted
+
+
+def test_terminal_summary_hook_reports_unsigned() -> None:
+    import importlib.util
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    path = Path(__file__).with_name("conftest.py")
+    spec = importlib.util.spec_from_file_location("issue39_eval_conftest", str(path))
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    reports = [
+        SimpleNamespace(nodeid="tests/eval/test_replay_eval.py::test_first"),
+        SimpleNamespace(nodeid="tests/eval/test_replay_eval.py::test_second"),
+        SimpleNamespace(nodeid="tests/unit/test_other.py::test_third"),
+    ]
+
+    class _Terminal:
+        def __init__(self) -> None:
+            self.stats = {"passed": reports}
+            self.lines: list[str] = []
+
+        def write_line(self, text: str) -> None:
+            self.lines.append(text)
+
+    terminal = _Terminal()
+    module.pytest_terminal_summary(terminal, 0, None)
+    assert len(terminal.lines) == 1
+    assert "accuracy: unsigned" in terminal.lines[0]
+    assert "precision: unsigned" in terminal.lines[0]
+    assert "checked 2" in terminal.lines[0]
