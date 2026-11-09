@@ -21,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api import health, routes
 from app.config import Settings, load_settings
 from app.context import build_context
+from app.contracts.errors import ErrorBody, ErrorResponse
 from app.domain.errors import DomainError
 from app.worker.poller import run_until_stopped
 
@@ -69,18 +70,16 @@ def _domain_error(request: Request, exc: Exception) -> JSONResponse:
     del request
     if not isinstance(exc, DomainError):
         raise exc
-    return JSONResponse(
-        status_code=exc.status,
-        content={
-            "error": {
-                "code": exc.code,
-                "message": exc.message,
-                "field_errors": exc.field_errors,
-                "retryable": exc.retryable,
-                "correlation_id": uuid4().hex,
-            }
-        },
+    payload = ErrorResponse(
+        error=ErrorBody(
+            code=exc.code,
+            message=exc.message,
+            field_errors=exc.field_errors,
+            retryable=exc.retryable,
+            correlation_id=uuid4().hex,
+        )
     )
+    return JSONResponse(status_code=exc.status, content=payload.model_dump(mode="json"))
 
 
 app = create_app()
