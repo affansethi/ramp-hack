@@ -4,6 +4,7 @@ import json
 from hashlib import sha256
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
@@ -223,3 +224,97 @@ def test_audit_route_rejects_mutations(tmp_path: Path) -> None:
             )
             assert response.status_code == 405
         assert client.get("/api/v1/audit-events").json()["audit_events"] == []
+
+
+def test_startup_upgrades_existing_audit_table(tmp_path: Path) -> None:
+    from sqlalchemy import inspect, text
+
+    from app.db import make_engine
+
+    database = make_engine(f"sqlite:///{tmp_path / 'contracts.db'}")
+    with database.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE TABLE audit_events (id VARCHAR(36) PRIMARY KEY, "
+                "org_id VARCHAR(36), actor_id VARCHAR(36), command VARCHAR(80), "
+                "object_type VARCHAR(80), object_id VARCHAR(36), "
+                "object_version INTEGER, created_at VARCHAR(32))"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO audit_events VALUES "
+                "('legacy', :org, :actor, 'legacy', 'purchase', 'object', 1, "
+                "'2026-01-01T00:00:00Z')"
+            ),
+            {"org": ORG_ID, "actor": PERSON_ID},
+        )
+    database.dispose()
+    with _client(tmp_path) as client:
+        _login(client)
+        rows = client.get("/api/v1/audit-events").json()["audit_events"]
+        assert len(rows) == 1
+        assert rows[0]["before_hash"] is None
+        assert rows[0]["after_hash"] is None
+        factory = client.app.state.ctx.session_factory
+        with factory() as session:
+            columns = {
+                column["name"]: column
+                for column in inspect(session.get_bind()).get_columns("audit_events")
+            }
+            assert columns["before_hash"]["nullable"]
+            assert columns["after_hash"]["nullable"]
+            _audit(session, ORG_ID, PERSON_ID, "test", "purchase", "object", 2)
+            session.commit()
+        # Running the upgrade again is harmless and preserves the new history.
+        from app.migrations import upgrade_audit_hashes
+
+        upgrade_audit_hashes(factory.kw["bind"])
+        rows = client.get("/api/v1/audit-events").json()["audit_events"]
+        assert len(rows) == 2
+        assert rows[0]["after_hash"] is None
+        assert rows[1]["before_hash"] == ""
+        assert rows[1]["after_hash"]
+
+
+def test_concurrent_first_referrals_chain_through_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier
+
+    import app.domain.commands as commands
+
+    with _client(tmp_path) as client:
+        _login(client)
+        created = _run(client, "case4", "create-concurrent")
+        detail = client.get(f"/api/v1/purchases/{created['purchase_id']}").json()
+        determination = detail["determinations"][0]
+        assert determination["label"] == "NEEDS_HUMAN_REVIEW"
+        barrier = Barrier(2)
+        original = commands._audit
+
+        def overlapping_audit(*args: object, **kwargs: object) -> None:
+            barrier.wait(timeout=10)
+            original(*args, **kwargs)
+
+        monkeypatch.setattr(commands, "_audit", overlapping_audit)
+
+        def refer(index: int) -> int:
+            response = client.post(
+                f"/api/v1/determinations/{determination['id']}/refer",
+                json={"action": "leave_open"},
+                headers=_headers(f"concurrent-refer-{index}"),
+            )
+            assert response.status_code == 200, response.text
+            return response.status_code
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            assert list(pool.map(refer, range(2))) == [200, 200]
+        rows = client.get(
+            "/api/v1/audit-events", params={"object_id": determination["id"]}
+        ).json()["audit_events"]
+        assert len(rows) == 2
+        assert rows[0]["before_hash"] == ""
+        assert rows[1]["before_hash"] == rows[0]["after_hash"]
+        assert rows[0]["after_hash"] == rows[1]["after_hash"]

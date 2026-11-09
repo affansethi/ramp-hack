@@ -8,7 +8,7 @@ from decimal import Decimal
 from hashlib import sha256
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.clock import utcnow
@@ -711,6 +711,24 @@ def _audit(
     object_id: str,
     version: int,
 ) -> None:
+    # Lock before looking up history, including when no first row exists yet.
+    # Database transaction locks survive this helper until commit or rollback.
+    with session.no_autoflush:
+        if session.get_bind().dialect.name == "postgresql":
+            lock_identity = json.dumps([org_id, object_type, object_id])
+            lock_key = int.from_bytes(
+                sha256(lock_identity.encode()).digest()[:8], signed=True
+            )
+            session.execute(
+                text("SELECT pg_advisory_xact_lock(:key)"), {"key": lock_key}
+            )
+        else:
+            # SQLite has one writer: a no-op UPDATE acquires its transaction
+            # write lock even for an object's first event (or an empty table).
+            session.execute(
+                text("UPDATE organizations SET id = id WHERE id = :org"),
+                {"org": org_id},
+            )
     # Flush pending command events too, so multiple writes in one transaction chain.
     session.flush()
     previous = session.scalar(
