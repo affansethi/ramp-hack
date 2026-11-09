@@ -5,7 +5,7 @@ from collections.abc import Iterator
 from typing import Annotated, Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import and_, delete, or_, select
@@ -24,6 +24,7 @@ from app.domain.commands import (
     mark_workpaper_ready,
     refer_determination,
     review_determination,
+    workpaper_document,
 )
 from app.domain.errors import DomainError
 from app.domain.pipeline import ingest_scenario, ingest_webhook
@@ -107,6 +108,7 @@ class ReadyBody(BaseModel):
 
     expected_version: int
     reason: str
+    fingerprint: str | None = None
 
 
 def get_db(request: Request) -> Iterator[Session]:
@@ -529,7 +531,7 @@ def workpapers(body: WorkpaperBody, request: Request, session: Db) -> dict[str, 
     if stored is not None:
         return stored
     workpaper = create_workpaper(session, viewer.org_id, body.jurisdiction, body.period)
-    payload = _workpaper_json(request, workpaper)
+    payload = _workpaper_json(request, session, workpaper)
     finish(session, viewer.org_id, _key(request) or "", canonical, payload)
     return payload
 
@@ -550,28 +552,37 @@ def mark_ready(
         workpaper_id=workpaper_id,
         expected_version=body.expected_version,
         reason=body.reason,
+        fingerprint=body.fingerprint,
     )
-    payload = _workpaper_json(request, workpaper)
+    payload = _workpaper_json(request, session, workpaper)
     finish(session, viewer.org_id, _key(request) or "", canonical, payload)
     return payload
 
 
 @router.get("/workpapers/{workpaper_id}/export")
-def export(workpaper_id: str, request: Request, session: Db) -> Response:
+def export(
+    workpaper_id: str,
+    request: Request,
+    session: Db,
+    export_format: Annotated[Literal["csv", "json"], Query(alias="format")],
+) -> Response:
     viewer = _viewer(request, session)
-    text = export_workpaper(session, viewer.org_id, workpaper_id)
-    return Response(content=text, media_type="text/csv")
+    settings = request.app.state.settings
+    media_type, body = export_workpaper(
+        session,
+        viewer.org_id,
+        workpaper_id,
+        export_format,
+        data_mode=settings.data_mode.value,
+        engine_mode=settings.engine_mode.value,
+    )
+    return Response(content=body, media_type=media_type)
 
 
-def _workpaper_json(request: Request, workpaper: Workpaper) -> dict[str, object]:
+def _workpaper_json(
+    request: Request, session: Session, workpaper: Workpaper
+) -> dict[str, object]:
     return {
         **meta(request.app.state.settings),
-        "id": workpaper.id,
-        "entity_name": workpaper.entity_name,
-        "jurisdiction": workpaper.jurisdiction,
-        "period": workpaper.period,
-        "version": workpaper.version,
-        "status": workpaper.status,
-        "fingerprint": workpaper.fingerprint,
-        "frozen_at": workpaper.frozen_at,
+        **workpaper_document(session, workpaper),
     }

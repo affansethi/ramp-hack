@@ -3,6 +3,7 @@
 import csv
 import io
 import json
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from hashlib import sha256
@@ -14,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.clock import utcnow
 from app.domain.errors import DomainError
 from app.domain.evaluate import quarter_key
-from app.domain.moneyutil import parse_decimal
+from app.domain.moneyutil import money_json, parse_decimal
 from app.domain.pipeline import enqueue_advance
 from app.models import (
     AuditEvent,
@@ -351,29 +352,82 @@ def collect_totals(session: Session, org_id: str) -> dict[str, object]:
     }
 
 
+_BANNER = "Synthetic demo data"
+_MARK = "DRAFT / SIMULATED"
+_EMPTY_LIABILITIES = "No approved liabilities"
+_REFUND_LABEL = "not recovered cash"
+_NO_APPROVED = "No approved liability lines. The draft was not changed."
+_OPEN_REASONS = frozenset({"NHR", "ERROR", "UNREVIEWED"})
+
+
+@dataclass
+class _Sections:
+    message: str | None
+    liabilities: list[tuple[str, str]]
+    held_count: int
+    open_count: int
+    excluded: list[tuple[str, str]]
+    refunds: list[tuple[str, str]]
+    charged_correctly_count: int
+
+    def dump(self) -> str:
+        payload = {
+            "message": self.message,
+            "liabilities": self.liabilities,
+            "held_count": self.held_count,
+            "open_count": self.open_count,
+            "excluded": self.excluded,
+            "refunds": self.refunds,
+            "charged_correctly_count": self.charged_correctly_count,
+        }
+        return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+    @classmethod
+    def load(cls, raw: str) -> "_Sections":
+        loaded = json.loads(raw)
+        if not isinstance(loaded, dict):
+            raise DomainError("NOT_FOUND", "Workpaper export is unreadable.", 404)
+        message = loaded.get("message")
+        if message is not None and not isinstance(message, str):
+            raise DomainError("NOT_FOUND", "Workpaper export is unreadable.", 404)
+        return cls(
+            message=message,
+            liabilities=_pairs(loaded.get("liabilities")),
+            held_count=_count(loaded.get("held_count")),
+            open_count=_count(loaded.get("open_count")),
+            excluded=_pairs(loaded.get("excluded")),
+            refunds=_pairs(loaded.get("refunds")),
+            charged_correctly_count=_count(loaded.get("charged_correctly_count")),
+        )
+
+
 def create_workpaper(
     session: Session, org_id: str, jurisdiction: str, period: str
 ) -> Workpaper:
-    fingerprint, liability_ids = _liability_fingerprint(
-        session, org_id, jurisdiction, period
-    )
-    if not liability_ids:
-        raise DomainError(
-            "NO_APPROVED_LIABILITY_LINES",
-            "No approved liabilities. Nothing was filed and no zero was written.",
-            422,
-        )
-    latest = _latest_workpaper(session, org_id, jurisdiction, period)
+    rows = _matching_liabilities(session, org_id, jurisdiction, period)
+    fingerprint = _fingerprint(rows)
+    ready = _ready_with_fingerprint(session, org_id, fingerprint)
     if (
-        latest is not None
-        and latest.status == "READY_TO_FILE_SIMULATED"
-        and latest.fingerprint == fingerprint
+        ready is not None
+        and ready.jurisdiction == jurisdiction
+        and ready.period == period
     ):
-        return latest
+        return ready
+    latest = _latest_workpaper(session, org_id, jurisdiction, period)
     if latest is not None and latest.status == "DRAFT":
-        _replace_lines(session, latest, liability_ids)
+        if latest.fingerprint != fingerprint:
+            latest.version += 1
         latest.fingerprint = fingerprint
+        _replace_lines(session, latest, [row.id for row in rows])
         return latest
+    prior_ready = session.scalar(
+        select(Workpaper.id).where(
+            Workpaper.org_id == org_id,
+            Workpaper.jurisdiction == jurisdiction,
+            Workpaper.period == period,
+            Workpaper.status == "READY_TO_FILE_SIMULATED",
+        )
+    )
     version = 1 if latest is None else latest.version + 1
     workpaper = Workpaper(
         id=str(uuid4()),
@@ -385,11 +439,13 @@ def create_workpaper(
         status="DRAFT",
         fingerprint=fingerprint,
         frozen_at=None,
+        created_after_ready=prior_ready is not None,
+        snapshot=None,
         created_at=utcnow(),
     )
     session.add(workpaper)
     session.flush()
-    _replace_lines(session, workpaper, liability_ids)
+    _replace_lines(session, workpaper, [row.id for row in rows])
     return workpaper
 
 
@@ -401,6 +457,7 @@ def mark_workpaper_ready(
     workpaper_id: str,
     expected_version: int,
     reason: str,
+    fingerprint: str | None = None,
 ) -> Workpaper:
     workpaper = session.get(Workpaper, workpaper_id)
     if workpaper is None or workpaper.org_id != org_id:
@@ -409,25 +466,33 @@ def mark_workpaper_ready(
         raise DomainError(
             "STALE_VERSION", "The workpaper changed. Reload it and try again.", 409
         )
-    fingerprint, liability_ids = _liability_fingerprint(
+    rows = _matching_liabilities(
         session, org_id, workpaper.jurisdiction, workpaper.period
     )
-    if workpaper.status == "READY_TO_FILE_SIMULATED":
-        if workpaper.fingerprint == fingerprint:
-            return workpaper
+    server_fingerprint = _fingerprint(rows)
+    if fingerprint is not None and fingerprint != server_fingerprint:
+        raise DomainError(
+            "STALE_VERSION", "The workpaper changed. Reload it and try again.", 409
+        )
+    if not rows:
+        raise DomainError("NO_APPROVED_LIABILITY_LINES", _NO_APPROVED, 422)
+    if (
+        workpaper.status == "READY_TO_FILE_SIMULATED"
+        and workpaper.fingerprint != server_fingerprint
+    ):
         raise DomainError(
             "STALE_VERSION", "This version is frozen. Open a new draft.", 409
         )
-    if not liability_ids:
-        raise DomainError(
-            "NO_APPROVED_LIABILITY_LINES",
-            "No approved liabilities. Nothing was filed and no zero was written.",
-            422,
-        )
-    _replace_lines(session, workpaper, liability_ids)
-    workpaper.fingerprint = fingerprint
+    existing = _ready_with_fingerprint(session, org_id, server_fingerprint)
+    if existing is not None:
+        return existing
+    _replace_lines(session, workpaper, [row.id for row in rows])
+    workpaper.fingerprint = server_fingerprint
     workpaper.status = "READY_TO_FILE_SIMULATED"
     workpaper.frozen_at = utcnow()
+    workpaper.snapshot = _live_sections(
+        session, org_id, workpaper.jurisdiction, workpaper.period
+    ).dump()
     _audit(
         session,
         org_id,
@@ -441,42 +506,32 @@ def mark_workpaper_ready(
     return workpaper
 
 
-def export_workpaper(session: Session, org_id: str, workpaper_id: str) -> str:
+def workpaper_document(session: Session, workpaper: Workpaper) -> dict[str, object]:
+    return _document(workpaper, _sections_for(session, workpaper))
+
+
+def export_workpaper(
+    session: Session,
+    org_id: str,
+    workpaper_id: str,
+    export_format: str,
+    *,
+    data_mode: str,
+    engine_mode: str,
+) -> tuple[str, str]:
     workpaper = session.get(Workpaper, workpaper_id)
     if workpaper is None or workpaper.org_id != org_id:
         raise DomainError("NOT_FOUND", "Workpaper not found.", 404)
-    buffer = io.StringIO()
-    writer = csv.writer(buffer)
-    writer.writerow(["banner", "Synthetic demo data"])
-    writer.writerow(["mark", "DRAFT / SIMULATED"])
-    writer.writerow(["status", workpaper.status])
-    writer.writerow(["jurisdiction", workpaper.jurisdiction])
-    writer.writerow(["period", workpaper.period])
-    writer.writerow([])
-    writer.writerow(["section", "approved liabilities"])
-    writer.writerow(["invoice", "amount"])
-    for link in session.scalars(
-        select(WorkpaperLine).where(WorkpaperLine.workpaper_id == workpaper.id)
-    ).all():
-        liability = session.get(LiabilityLine, link.liability_line_id)
-        if liability is None:
-            continue
-        purchase = session.get(Purchase, liability.purchase_id)
-        invoice = purchase.invoice_number if purchase is not None else ""
-        writer.writerow([_escape(invoice), _escape(liability.amount)])
-    writer.writerow([])
-    writer.writerow(["section", "excluded"])
-    writer.writerow(["invoice", "why"])
-    for purchase in session.scalars(
-        select(Purchase).where(Purchase.org_id == org_id)
-    ).all():
-        if quarter_key(date.fromisoformat(purchase.invoice_date)) != workpaper.period:
-            continue
-        why = _exclusion_reason(session, purchase)
-        if why is None:
-            continue
-        writer.writerow([_escape(purchase.invoice_number), why])
-    return buffer.getvalue()
+    if export_format not in ("csv", "json"):
+        raise DomainError("UNKNOWN_FORMAT", "Export format must be csv or json.", 422)
+    sections = _sections_for(session, workpaper)
+    document = _document(workpaper, sections)
+    document["data_mode"] = data_mode
+    document["engine_mode"] = engine_mode
+    if export_format == "json":
+        body = json.dumps(document, sort_keys=True, separators=(",", ":"))
+        return "application/json", body
+    return "text/csv", _render_csv(workpaper, sections, data_mode, engine_mode)
 
 
 def _approve_liability(
@@ -558,47 +613,267 @@ def _approve_refund(
     )
 
 
-def _exclusion_reason(session: Session, purchase: Purchase) -> str | None:
-    hold = session.scalar(
-        select(Hold).where(Hold.purchase_id == purchase.id, Hold.active.is_(True))
+def _pairs(value: object) -> list[tuple[str, str]]:
+    if not isinstance(value, list):
+        raise DomainError("NOT_FOUND", "Workpaper export is unreadable.", 404)
+    pairs: list[tuple[str, str]] = []
+    for item in value:
+        if (
+            not isinstance(item, list)
+            or len(item) != 2
+            or not isinstance(item[0], str)
+            or not isinstance(item[1], str)
+        ):
+            raise DomainError("NOT_FOUND", "Workpaper export is unreadable.", 404)
+        pairs.append((item[0], item[1]))
+    return pairs
+
+
+def _count(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise DomainError("NOT_FOUND", "Workpaper export is unreadable.", 404)
+    return value
+
+
+def _document(workpaper: Workpaper, sections: _Sections) -> dict[str, object]:
+    return {
+        "banner": _BANNER,
+        "mark": _MARK,
+        "id": workpaper.id,
+        "entity_name": workpaper.entity_name,
+        "jurisdiction": workpaper.jurisdiction,
+        "period": workpaper.period,
+        "version": workpaper.version,
+        "status": workpaper.status,
+        "fingerprint": workpaper.fingerprint,
+        "frozen_at": workpaper.frozen_at,
+        "created_after_ready": workpaper.created_after_ready,
+        "approved_liabilities_message": sections.message,
+        "approved_liabilities": [
+            {"invoice": invoice, "amount": money_json(amount)}
+            for invoice, amount in sections.liabilities
+        ],
+        "held_count": sections.held_count,
+        "open_count": sections.open_count,
+        "excluded": [
+            {"invoice": invoice, "reason": reason}
+            for invoice, reason in sections.excluded
+        ],
+        "refund_candidates": {
+            "label": _REFUND_LABEL,
+            "lines": [
+                {"invoice": invoice, "amount": money_json(amount)}
+                for invoice, amount in sections.refunds
+            ],
+        },
+        "charged_correctly_count": sections.charged_correctly_count,
+    }
+
+
+def _render_csv(
+    workpaper: Workpaper, sections: _Sections, data_mode: str, engine_mode: str
+) -> str:
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="\n")
+    rows: list[list[str]] = [
+        ["banner", _BANNER],
+        ["mark", _MARK],
+        ["data_mode", data_mode],
+        ["engine_mode", engine_mode],
+        ["status", workpaper.status],
+        ["jurisdiction", workpaper.jurisdiction],
+        ["period", workpaper.period],
+        ["version", str(workpaper.version)],
+        ["fingerprint", workpaper.fingerprint or ""],
+        ["created_after_ready", "true" if workpaper.created_after_ready else "false"],
+        ["frozen_at", workpaper.frozen_at or ""],
+        [],
+        ["section", "approved liabilities"],
+    ]
+    if sections.message is not None:
+        rows.append(["message", sections.message])
+    rows.append(["held_count", str(sections.held_count)])
+    rows.append(["open_count", str(sections.open_count)])
+    if sections.liabilities:
+        rows.append(["invoice", "amount"])
+        rows.extend([invoice, amount] for invoice, amount in sections.liabilities)
+    rows.extend([[], ["section", "excluded"], ["invoice", "reason"]])
+    rows.extend([invoice, reason] for invoice, reason in sections.excluded)
+    rows.extend([[], ["section", _REFUND_LABEL]])
+    if sections.refunds:
+        rows.append(["invoice", "amount"])
+        rows.extend([invoice, amount] for invoice, amount in sections.refunds)
+    rows.extend(
+        [
+            [],
+            ["section", "charged correctly"],
+            ["count", str(sections.charged_correctly_count)],
+        ]
     )
-    if hold is not None:
-        return "HELD"
-    current = session.scalars(
-        select(Determination).where(
-            Determination.purchase_id == purchase.id,
-            Determination.is_current.is_(True),
+    for row in rows:
+        writer.writerow([_escape(cell) for cell in row])
+    return buffer.getvalue()
+
+
+def _sections_for(session: Session, workpaper: Workpaper) -> _Sections:
+    if workpaper.status == "READY_TO_FILE_SIMULATED" and workpaper.snapshot:
+        return _Sections.load(workpaper.snapshot)
+    return _live_sections(
+        session, workpaper.org_id, workpaper.jurisdiction, workpaper.period
+    )
+
+
+def _live_sections(
+    session: Session, org_id: str, jurisdiction: str, period: str
+) -> _Sections:
+    liabilities = [
+        (_invoice_number(session, row), row.amount)
+        for row in sorted(
+            _matching_liabilities(session, org_id, jurisdiction, period),
+            key=lambda row: (_invoice_number(session, row), row.id),
         )
-    ).all()
-    if any(item.unit_status == "DETERMINATION_ERROR" for item in current):
+    ]
+    excluded: list[tuple[str, str]] = []
+    refunds: list[tuple[str, str]] = []
+    held_count = 0
+    open_count = 0
+    charged_correctly_count = 0
+    for purchase in _period_purchases(session, org_id, period):
+        held = _has_active_hold(session, purchase.id)
+        current = _current_determinations(session, purchase.id)
+        if held:
+            held_count += 1
+            excluded.append((purchase.invoice_number, "HELD"))
+        else:
+            reasons = [
+                reason
+                for item in current
+                if (reason := _excluded_reason(item)) is not None
+            ]
+            if any(reason in _OPEN_REASONS for reason in reasons):
+                open_count += 1
+            excluded.extend((purchase.invoice_number, reason) for reason in reasons)
+            for item in current:
+                if item.unit_status == "APPROVED_FOR_PURSUIT":
+                    candidate = session.scalar(
+                        select(RefundCandidate).where(
+                            RefundCandidate.determination_id == item.id
+                        )
+                    )
+                    if candidate is not None:
+                        refunds.append((purchase.invoice_number, candidate.amount))
+                elif (
+                    item.unit_status == "APPROVED"
+                    and item.direction == "CHARGED_CORRECTLY"
+                ):
+                    charged_correctly_count += 1
+        superseded = session.scalars(
+            select(Determination)
+            .where(
+                Determination.purchase_id == purchase.id,
+                Determination.unit_status == "SUPERSEDED",
+            )
+            .order_by(Determination.id)
+        ).all()
+        excluded.extend((purchase.invoice_number, "SUPERSEDED") for _row in superseded)
+    excluded.sort(key=lambda item: item)
+    refunds.sort(key=lambda item: item)
+    return _Sections(
+        message=None if liabilities else _EMPTY_LIABILITIES,
+        liabilities=liabilities,
+        held_count=held_count,
+        open_count=open_count,
+        excluded=excluded,
+        refunds=refunds,
+        charged_correctly_count=charged_correctly_count,
+    )
+
+
+def _excluded_reason(determination: Determination) -> str | None:
+    if determination.unit_status == "DETERMINATION_ERROR":
         return "ERROR"
-    if any(item.label == "NEEDS_HUMAN_REVIEW" for item in current):
-        return "NEEDS_HUMAN_REVIEW"
-    if any(item.unit_status == "READY_FOR_REVIEW" for item in current):
+    if determination.label == "NEEDS_HUMAN_REVIEW":
+        return "NHR"
+    if determination.unit_status == "READY_FOR_REVIEW":
         return "UNREVIEWED"
+    if determination.unit_status == "REJECTED":
+        return "REJECTED"
     return None
 
 
-def _liability_fingerprint(
+def _matching_liabilities(
     session: Session, org_id: str, jurisdiction: str, period: str
-) -> tuple[str, list[str]]:
+) -> list[LiabilityLine]:
     kept: list[LiabilityLine] = []
     rows = session.scalars(
-        select(LiabilityLine).where(
-            LiabilityLine.jurisdiction == jurisdiction,
-            LiabilityLine.period == period,
-        )
+        select(LiabilityLine).where(LiabilityLine.jurisdiction == jurisdiction)
     ).all()
     for row in rows:
         purchase = session.get(Purchase, row.purchase_id)
         determination = session.get(Determination, row.determination_id)
         if purchase is None or determination is None or purchase.org_id != org_id:
             continue
-        if determination.is_current and determination.unit_status == "APPROVED":
+        if _invoice_period(purchase) != period:
+            continue
+        if _has_active_hold(session, purchase.id):
+            continue
+        if (
+            determination.is_current
+            and determination.unit_status == "APPROVED"
+            and determination.direction == "LIABILITY"
+        ):
             kept.append(row)
-    kept.sort(key=lambda row: row.id)
-    payload = "|".join(f"{row.id}:{row.amount}" for row in kept)
-    return sha256(payload.encode("utf-8")).hexdigest(), [row.id for row in kept]
+    return kept
+
+
+def _fingerprint(rows: list[LiabilityLine]) -> str:
+    ordered = sorted(rows, key=lambda row: row.id)
+    payload = "|".join(f"{row.id}:{row.amount}" for row in ordered)
+    return sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _ready_with_fingerprint(
+    session: Session, org_id: str, fingerprint: str
+) -> Workpaper | None:
+    return session.scalar(
+        select(Workpaper).where(
+            Workpaper.org_id == org_id,
+            Workpaper.status == "READY_TO_FILE_SIMULATED",
+            Workpaper.fingerprint == fingerprint,
+        )
+    )
+
+
+def _period_purchases(session: Session, org_id: str, period: str) -> list[Purchase]:
+    rows = [
+        purchase
+        for purchase in session.scalars(
+            select(Purchase).where(Purchase.org_id == org_id)
+        ).all()
+        if _invoice_period(purchase) == period
+    ]
+    rows.sort(key=lambda purchase: (purchase.invoice_number, purchase.id))
+    return rows
+
+
+def _invoice_period(purchase: Purchase) -> str:
+    return quarter_key(date.fromisoformat(purchase.invoice_date))
+
+
+def _invoice_number(session: Session, row: LiabilityLine) -> str:
+    purchase = session.get(Purchase, row.purchase_id)
+    if purchase is None:
+        return ""
+    return purchase.invoice_number
+
+
+def _current_determinations(session: Session, purchase_id: str) -> list[Determination]:
+    rows = session.scalars(
+        select(Determination)
+        .where(Determination.purchase_id == purchase_id)
+        .order_by(Determination.id)
+    ).all()
+    return [row for row in rows if row.is_current and row.unit_status != "SUPERSEDED"]
 
 
 def _latest_workpaper(
