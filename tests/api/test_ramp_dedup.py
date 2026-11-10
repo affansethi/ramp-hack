@@ -13,9 +13,7 @@ from tests.api.test_flow import signed_client  # noqa: F401
 
 
 def _send(client: TestClient, event: str, kind: str, object_id: str) -> None:
-    raw = json.dumps(
-        {"id": event, "type": kind, "data": {"id": object_id}}
-    ).encode()
+    raw = json.dumps({"id": event, "type": kind, "data": {"id": object_id}}).encode()
     signature = hmac.new(b"test-secret", raw, hashlib.sha256).hexdigest()
     response = client.post(
         "/api/v1/webhooks/ramp",
