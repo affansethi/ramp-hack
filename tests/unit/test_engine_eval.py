@@ -68,7 +68,9 @@ def _reviewed_ruleset() -> Ruleset:
 def test_placeholder_stays_inactive_after_owner_signoff() -> None:
     ruleset = load_ruleset(Path("rules"))
     assert ruleset.rules
-    placeholders = [rule for rule in ruleset.rules if rule.id.startswith("PLACEHOLDER:")]
+    placeholders = [
+        rule for rule in ruleset.rules if rule.id.startswith("PLACEHOLDER:")
+    ]
     assert placeholders
     assert all(not rule_is_active(rule) for rule in placeholders)
     assert all(rule.reviewed_by is None for rule in placeholders)
