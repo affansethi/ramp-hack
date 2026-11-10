@@ -36,9 +36,7 @@ def test_receipt_and_ocr_items_are_decimal_strings(
         assert all(fact.origin == "RAMP_RECORD" for fact in amounts + taxes)
         evidence = list(session.scalars(select(Evidence)).all())
         assert evidence
-        holder = session.scalar(
-            select(Fact).where(Fact.field_key == "user_location")
-        )
+        holder = session.scalar(select(Fact).where(Fact.field_key == "user_location"))
         assert holder is not None
         assert holder.confirmation == "UNCONFIRMED"
         assert holder.evidence_rung == 5
