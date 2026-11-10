@@ -128,7 +128,8 @@ def _poll(ctx: AppContext) -> int:
         if job.kind != "advance":
             error_code = "FETCH_FAILED" if job.kind == "fetch" else "JOB_FAILED"
         handler(ctx, session, job)
-        job.status = "SUCCEEDED"
+        if job.status != "FAILED":
+            job.status = "SUCCEEDED"
         job.lease_until = None
         session.commit()
         return 1

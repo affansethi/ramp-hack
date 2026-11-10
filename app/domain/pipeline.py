@@ -54,7 +54,9 @@ class IngestResult:
     source_event_id: str
 
 
-def ingest_scenario(session: Session, scenario: Scenario, org_id: str) -> IngestResult:
+def ingest_scenario(
+    session: Session, scenario: Scenario, org_id: str, *, job: Job | None = None
+) -> IngestResult:
     if scenario.currency != "USD":
         raise DomainError("UNSUPPORTED_CURRENCY", "Only USD is in the demo.", 422)
     # In-memory schema gate. Replay does not open a recording. A forbidden key
@@ -62,7 +64,7 @@ def ingest_scenario(session: Session, scenario: Scenario, org_id: str) -> Ingest
     try:
         parse_extraction(_printed_extraction(scenario))
     except ForbiddenField:
-        return _forbidden_field_job(session, org_id)
+        return _forbidden_field_job(session, org_id, job=job)
     return _ingest(
         session,
         org_id=org_id,
@@ -148,8 +150,14 @@ def _printed_evidence(line: LineInput) -> str:
     return ". ".join(parts)
 
 
-def _forbidden_field_job(session: Session, org_id: str) -> IngestResult:
+def _forbidden_field_job(
+    session: Session, org_id: str, *, job: Job | None = None
+) -> IngestResult:
     """Record the refusal without a purchase, fact, determination, or amount."""
+    if job is not None:
+        job.status = "FAILED"
+        job.error_code = "FORBIDDEN_FIELD"
+        return IngestResult(None, job.id, False, job.id)
     job = Job(
         id=str(uuid4()),
         org_id=org_id,
@@ -259,7 +267,10 @@ def ingest_fetched_record(
     if scenario is not None:
         # Existing owner-provided demo extraction remains a labeled replay.
         result = ingest_scenario(
-            session, replace(scenario, entity_amount=amount, ocr_taxes=tax), job.org_id
+            session,
+            replace(scenario, entity_amount=amount, ocr_taxes=tax),
+            job.org_id,
+            job=job,
         )
     else:
         line = LineInput(
