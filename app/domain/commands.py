@@ -6,6 +6,7 @@ import json
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from hashlib import sha256
+from pathlib import Path
 from typing import NamedTuple
 from uuid import uuid4
 
@@ -182,6 +183,7 @@ def review_determination(
     approval_path: str | None,
     reason: str,
     expected_version: int,
+    rules_dir: str = "rules",
 ) -> Determination:
     determination = _determination(session, org_id, determination_id)
     if determination.version != expected_version or not determination.is_current:
@@ -221,7 +223,13 @@ def review_determination(
         )
     elif determination.direction == "REFUND_CANDIDATE":
         _approve_refund(
-            session, determination, purchase, approval_path, actor_id, reason
+            session,
+            determination,
+            purchase,
+            approval_path,
+            actor_id,
+            reason,
+            rules_dir=rules_dir,
         )
     else:
         determination.unit_status = "APPROVED"
@@ -619,6 +627,7 @@ def _approve_refund(
     approval_path: str | None,
     actor_id: str,
     reason: str,
+    rules_dir: str = "rules",
 ) -> None:
     if not determination.engine_amount:
         raise DomainError(
@@ -645,10 +654,38 @@ def _approve_refund(
             vendor=purchase.vendor,
             invoice_number=purchase.invoice_number,
             amount=determination.engine_amount,
-            basis_text="",
+            basis_text=_filing_basis_text(rules_dir, purchase, determination),
             status="DRAFT",
         )
     )
+
+
+def _filing_basis_text(
+    rules_dir: str, purchase: Purchase, determination: Determination
+) -> str:
+    path = Path(rules_dir) / "filing-basis.txt"
+    if not path.exists():
+        return ""
+    sections: dict[str, list[str]] = {}
+    current = ""
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if line.startswith("[") and line.endswith("]") and len(line) > 2:
+            current = line[1:-1]
+            sections[current] = []
+            continue
+        if current and line and not line.startswith("#"):
+            sections[current].append(line)
+    key = "ca_saas_vendor_tax"
+    if determination.jurisdiction == "NY":
+        key = "ny_hardware_use_tax"
+    elif determination.jurisdiction == "WA":
+        key = "wa_use_tax_journal"
+    text = " ".join(sections.get(key, []))
+    banned = ("was sent", "letter was sent")
+    if any(phrase in text.lower() for phrase in banned):
+        return ""
+    return text
 
 
 def _pairs(value: object) -> list[tuple[str, str]]:
