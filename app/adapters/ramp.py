@@ -51,7 +51,9 @@ class RampSimulator:
     ) -> dict[str, str | None]:
         records = self.bills if event_type == "bills.created" else self.transactions
         record = records[object_id]
-        receipt_ids = [receipt_id] if receipt_id else record.get("receipts", [])
+        receipt_ids = dict.fromkeys(
+            [*record.get("receipts", []), *([receipt_id] if receipt_id else [])]
+        )
         taxes = [
             tax["tax_amount"]
             for rid in receipt_ids
