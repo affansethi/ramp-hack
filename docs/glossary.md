@@ -109,7 +109,7 @@ The ladder is ordered evidence, not automatic admission. A low-confidence propos
 
 **Journal entry draft.** A draft use-tax entry for current approved liability units: debit Use Tax Expense, credit Use Tax Payable, lines copied from those units. It is not posted and not a payment.
 
-**Refund letter draft.** A draft letter for a refund candidate approved for pursuit. It uses the vendor, invoice, copied amount, and owner-approved basis text. The model does not write that basis. The letter stays a draft and is never sent.
+**Refund letter draft.** A draft letter for a refund candidate approved for pursuit. It uses the vendor, invoice, copied amount, and basis text from `rules/filing_basis.yaml` verified under `docs/content-verification.md`. The model does not write that basis. The letter stays a draft and is never sent.
 
 **Workpaper.** The document for one filing key: entity, jurisdiction, and period, built only from current approved liability lines. The demo period is Washington Q4 2026, 2026-10-01 through 2026-12-31, assigned by invoice date (`invoice_date`). Held, NHR, error, unreviewed, rejected, and superseded units appear in an excluded section with no tax amounts. Refund candidates stay on a separate list. A key with no approved lines says "No approved liabilities" and does not show a bare 0.00. Marking ready freezes that version. A later change creates a new draft and a visible flag. It does not edit the frozen version.
 
@@ -123,7 +123,7 @@ The ladder is ordered evidence, not automatic admission. A low-confidence propos
 - Refund candidates approved for pursuit, labeled not recovered cash.
 - Held items: a count, plus purchase amount labeled "purchase amount, not tax."
 
-Needs-human-review and determination errors are counts or lists with reasons, not amounts. Unreviewed results contribute a count only. Nothing enters a money total until a named person approves the current unit. There is no net, no savings figure, and no recovered figure. Optional audit exposure stays off unless the owners sign its basis and assumptions. If shown, it is labeled "Illustrative: if an auditor finds it first" and uses approved liabilities only. It is not savings, and it does not take held, NHR, unreviewed, or error units as inputs.
+Needs-human-review and determination errors are counts or lists with reasons, not amounts. Unreviewed results contribute a count only. Nothing enters a money total until a named person approves the current unit. There is no net, no savings figure, and no recovered figure. Optional audit exposure stays off until its basis and assumptions are verified under `docs/content-verification.md`. If shown, it is labeled "Illustrative: if an auditor finds it first" and uses approved liabilities only. It is not savings, and it does not take held, NHR, unreviewed, or error units as inputs.
 
 ## Engine and rules
 
@@ -137,7 +137,7 @@ Needs-human-review and determination errors are counts or lists with reasons, no
 
 **PLACEHOLDER entry.** A rule entry whose id starts with the prefix `PLACEHOLDER:`. The prefix is not a label, not a unit status, and not a third result. The entry stays inactive and illustrative. It cannot support an approval or a total. Placeholder and other unreviewed entries route to NHR with no amount: `RULE_TRANSITION_UNRESOLVED` when the gap is an unresolved transition, otherwise `ENGINE_UNSUPPORTED`.
 
-**Effective dating.** Each rule entry has an effective from and an effective to. The engine picks the entry from those dates and the timing basis verified under `docs/content-verification.md`. The reporting period is chosen separately, by invoice date. Demo SaaS uses monthly service periods. No annual or cross-year timing is inferred. Hardware uses its own verified delivery-date rule. Unverified timing and an unresolved transition route to NHR `RULE_TRANSITION_UNRESOLVED`, with no amount and no approval. Changing a date does not by itself make a result engine-supported. Only a verified entry activates. A `candidate` rule entry is inactive. That is a different status from the required-fact catalog, which is `candidate` until `verified`.
+**Effective dating.** Each rule entry has an effective from and an effective to. The engine picks the entry from those dates and the timing basis verified under `docs/content-verification.md`. The reporting period is chosen separately, by invoice date. Demo SaaS uses monthly service periods. No annual or cross-year timing is inferred. Hardware uses its own verified delivery-date rule. Unverified timing and an unresolved transition route to NHR `RULE_TRANSITION_UNRESOLVED`, with no amount and no approval. Changing a date does not by itself make a result engine-supported. Only a verified entry activates. A `candidate` rule entry is inactive.
 
 ## Scope and run modes
 

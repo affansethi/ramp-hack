@@ -746,7 +746,7 @@ ESSB 5814 (effective 2025-10-01) added IT services, custom software and similar 
 | San Francisco, CA | 8.625% | n/a | From 2026-10-01 | CDTFA rates |
 | New York City, NY | 8.875% | 8081 | Current | NY Pub 718 |
 
-**Refund and reporting routes (owner-review research pointers; only owner-approved basis text enters DRAFT outputs, never transmitted or presented as verified filing advice).**
+**Refund and reporting routes (research pointers; only basis text from `rules/filing_basis.yaml` verified under `docs/content-verification.md` enters DRAFT outputs, never transmitted or presented as verified filing advice).**
 
 | Situation | Output | Basis |
 | :---- | :---- | :---- |
@@ -756,7 +756,7 @@ ESSB 5814 (effective 2025-10-01) added IT services, custom software and similar 
 | NY use tax, unregistered business | Journal entry; Form ST-130 within 20 days | NY DTF |
 | CA use tax from 2027, no seller's permit | Note: register and report directly once untaxed purchases pass \$10,000 a year | CDTFA (threshold applies 2024 to 2028\) |
 
-**Audit exposure inputs (P1 candidate research only; off until owners review/sign all relevant sources and assumptions; placeholder rates never produce an estimate).**
+**Audit exposure inputs (P1 candidate research only; off until the sourced basis and assumptions are verified under `docs/content-verification.md`; placeholder rates never produce an estimate).**
 
 | State | Lookback | Late payment penalty | 2026 interest |
 | :---- | :---- | :---- | :---- |
@@ -960,7 +960,7 @@ Demo amounts and outcomes come from engine output. No script asserts an outcome 
 * **Judge interaction. A sourced demo fact edit changes Case 3's service month to January 2027, supersedes any old approval and reruns admission plus deterministic rules. Case 4 shows NHR RULE\_TRANSITION\_UNRESOLVED, not a supported placeholder tax verdict. Recorded model extraction stays visibly labeled replay; live rule recalculation is not live model inference.**  
 * **Trace view.** Every result shows the receipt, the extracted JSON, the rule ID with its source link, the rate, the location code and the math.  
 * **Hold on purpose.** Case 6 is shown, and the hold rate is on the dashboard.  
-* **Figures. Approved liabilities and refund candidates (not recovered cash) stay separate. Optional P1 audit exposure is off by default; enable only after owners sign source-reviewed lookback/interest/assumptions, clearly illustrative, approved current liabilities only. No held/NHR/unreviewed/error inputs or unsupported savings/net claims.**  
+* **Figures. Approved liabilities and refund candidates (not recovered cash) stay separate. Optional P1 audit exposure is off by default; enable only after the sourced lookback/interest/assumptions basis is verified under `docs/content-verification.md`, clearly illustrative, approved current liabilities only. No held/NHR/unreviewed/error inputs or unsupported savings/net claims.**  
 * **Stage mode.** `LLM_MODE=replay`, B1 with Always On, `main` frozen 24 hours before, the page loaded once before going on stage, and a 60-second backup recording on the laptop.
 
 ## 15 Work breakdown
@@ -973,7 +973,7 @@ Ordered by dependency. One issue, one pull request.
 | 2 | Rule and rate tables plus engine (CA, WA, NY, effective dates) with unit tests | AF | 1 | Evaluator passes contract tests and synthetic unit fixtures, including no-adjustment and unsupported/NHR paths; authoritative case goldens/signoff are not prerequisites for scaffolding. |
 | 3 | S3 catalog: draft, then verify under `docs/content-verification.md` | RJ | 2 | Status verified |
 | 4 | DocumentExtractor: provider interface, strict schema, forbidden-field check, replay cache | RJ | 1 | Replay extraction for synthetic contract examples passes the extraction schema; final verified golden set follows in item 5\. |
-| 5 | Fixtures and golden set with expected results | RJ (extraction), AF (engine) | 2, 4 | 20–30 fixtures with verified expected outputs for Cases 1–7, including NHR/no-amount paths, committed; engine rounding basis is verified under `docs/content-verification.md`. |
+| 5 | Fixtures and golden set with expected results | RJ (extraction), AF (engine) | 2, 4 | 20–30 fixtures with verified expected outputs for Cases 1–7, including NHR/no-amount paths, committed; engine rounding basis in `rules/entries.yaml` is verified under `docs/content-verification.md`. |
 | 6 | Ramp simulator and webhook intake: signature, dedup, fetch | AF | 1 | Case 7 passes |
 | 7 | Fact admission, Ramp OCR cross-check, hold check, jurisdiction set, questions | AF (RJ on question wording) | 3, 4 | Case 6 holds correctly |
 | 8 | Review queue, approvals, totals, journal entry and refund letter drafts | AF | 2, 5, 7 | Cases 1 to 5 run end to end in the UI |

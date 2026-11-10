@@ -50,7 +50,7 @@ The hard part is usually the facts, not the arithmetic. Invoices do not say wher
 - No "savings," "recovered," or traction claims.  
 - No automated vendor refund claims, nexus studies, or registration.  
 - Not a replacement for a tax engine's calculation or filing.  
-- Later, not demo: reminders/escalation, automatic re-routing, bulk approval, partial holds, trail export, extra refund statuses and mixed-invoice splitting. Demo outputs are journal-entry and vendor-refund-letter drafts plus WA workpaper export; none is transmitted. Optional P1 audit-exposure estimate stays off unless owners sign the sourced basis and assumptions; it never estimates held/NHR units or claims savings.
+- Later, not demo: reminders/escalation, automatic re-routing, bulk approval, partial holds, trail export, extra refund statuses and mixed-invoice splitting. Demo outputs are journal-entry and vendor-refund-letter drafts plus WA workpaper export; none is transmitted. Optional P1 audit-exposure estimate stays off until its sourced basis and assumptions are verified under `docs/content-verification.md`; it never estimates held/NHR units or claims savings.
 
 ## 3 Core user flow (demo)
 
@@ -176,7 +176,7 @@ Add a second line with otherwise identical monthly terms and amount, users in Sa
 
 ### Case 3 — CA overcharge
 
-Service period 2026-12-01 to 2026-12-31; invoice date 2026-12-15; monthly SaaS, San Francisco user evidence, price \$962.32 and sourced vendor tax \$83.00. Fixture target after CA-RAS-001 and the golden are verified under `docs/content-verification.md`: REFUND\_CANDIDATE \$83.00; without a verified rule, NHR instead. Human approval for pursuit creates its separate total and a DRAFT vendor letter using owner-approved basis text. No letter is sent. Fail: netting, recovery/savings claims, or AI-generated legal conclusions.
+Service period 2026-12-01 to 2026-12-31; invoice date 2026-12-15; monthly SaaS, San Francisco user evidence, price \$962.32 and sourced vendor tax \$83.00. Fixture target after CA-RAS-001 and the golden are verified under `docs/content-verification.md`: REFUND\_CANDIDATE \$83.00; without a verified rule, NHR instead. Human approval for pursuit creates its separate total and a DRAFT vendor letter using basis text from `rules/filing_basis.yaml` verified under `docs/content-verification.md`. No letter is sent. Fail: netting, recovery/savings claims, or AI-generated legal conclusions.
 
 ### Case 4 — Unresolved CA transition
 
