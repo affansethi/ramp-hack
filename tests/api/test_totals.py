@@ -229,11 +229,12 @@ def test_held_omits_purchase_amount_when_empty(tmp_path: Path) -> None:
         assert_refund_candidates_stay_separate(totals)
 
 
-def test_scenario_copy_leaves_unrelated_rules_unsigned(tmp_path: Path) -> None:
+def test_scenario_copy_leaves_unrelated_rules_unchanged(tmp_path: Path) -> None:
     repo = {
         name: (ROOT / "rules" / name).read_bytes()
         for name in ("entries.yaml", "rates.yaml", "catalog.yaml")
     }
+    source = load_ruleset(ROOT / "rules")
     case1 = tmp_path / "case1"
     copy_scenario_rules(
         case1,
@@ -241,10 +242,7 @@ def test_scenario_copy_leaves_unrelated_rules_unsigned(tmp_path: Path) -> None:
         reviewed_rule_ids=_CASE1.reviewed_rule_ids,
         reviewed_rates=_CASE1.reviewed_rates,
     )
-    wa_only = load_ruleset(case1)
-    assert _active_rule_ids(wa_only) == {"WA-RAS-001"}
-    assert _active_rate_keys(wa_only) == {("WA", "Seattle, WA")}
-    assert _signed_categories(wa_only) == {"REMOTE_ACCESS_SAAS"}
+    _assert_copy_activates(load_ruleset(case1), source, _CASE1)
 
     both = tmp_path / "both"
     copy_scenario_rules(
@@ -254,29 +252,36 @@ def test_scenario_copy_leaves_unrelated_rules_unsigned(tmp_path: Path) -> None:
         reviewed_rates=_BOTH.reviewed_rates,
     )
     paired = load_ruleset(both)
-    assert _active_rule_ids(paired) == {"CA-RAS-001", "WA-RAS-001"}
-    assert _active_rate_keys(paired) == {
-        ("CA", "San Francisco, CA"),
-        ("WA", "Seattle, WA"),
-    }
-    assert _signed_categories(paired) == {"REMOTE_ACCESS_SAAS"}
+    _assert_copy_activates(paired, source, _BOTH)
+    source_rules = {rule.id: rule for rule in source.rules}
     for rule in paired.rules:
-        if rule.id in {"WA-RAS-001", "CA-RAS-001"}:
+        if rule.id in _BOTH.reviewed_rule_ids:
             continue
-        assert rule.review_status == "candidate"
-        assert rule.reviewed_by is None
-        assert not rule_is_active(rule)
+        original = source_rules[rule.id]
+        assert rule.review_status == original.review_status
+        assert rule.reviewed_by == original.reviewed_by
+        assert rule_is_active(rule) == rule_is_active(original)
+    source_rates = {(rate.jurisdiction, rate.location): rate for rate in source.rates}
     for rate in paired.rates:
-        if (rate.jurisdiction, rate.location) in _BOTH.reviewed_rates:
+        key = (rate.jurisdiction, rate.location)
+        if key in _BOTH.reviewed_rates:
             continue
-        assert rate.review_status == "candidate"
-        assert rate.reviewed_by is None
-        assert not rate_is_active(rate)
+        original_rate = source_rates[key]
+        assert rate.review_status == original_rate.review_status
+        assert rate.reviewed_by == original_rate.reviewed_by
+        assert rate_is_active(rate) == rate_is_active(original_rate)
     hardware = next(
         entry for entry in paired.catalog if entry.category == "COMPUTER_HARDWARE"
     )
-    assert hardware.status == "candidate"
-    assert hardware.signed_off_by is None
+    original_hardware = next(
+        entry for entry in source.catalog if entry.category == "COMPUTER_HARDWARE"
+    )
+    assert hardware.status == original_hardware.status
+    assert hardware.signed_off_by == original_hardware.signed_off_by
+    placeholder = next(
+        rule for rule in paired.rules if rule.id == "PLACEHOLDER:CA-DP-001"
+    )
+    assert not rule_is_active(placeholder)
     for name, raw in repo.items():
         assert (ROOT / "rules" / name).read_bytes() == raw
 
@@ -304,6 +309,18 @@ def test_forbidden_total_names_ignore_the_disclaimer() -> None:
     assert set(forbidden_total_field_names(injected)) == {"net", "recovered", "savings"}
     with pytest.raises(AssertionError):
         assert_refund_candidates_stay_separate(injected)
+
+
+def _assert_copy_activates(copied: Ruleset, source: Ruleset, rules: _Rules) -> None:
+    assert _active_rule_ids(copied) == (
+        _active_rule_ids(source) | set(rules.reviewed_rule_ids)
+    )
+    assert _active_rate_keys(copied) == (
+        _active_rate_keys(source) | set(rules.reviewed_rates)
+    )
+    assert _signed_categories(copied) == (
+        _signed_categories(source) | set(rules.signed_categories)
+    )
 
 
 def _active_rule_ids(ruleset: Ruleset) -> set[str]:

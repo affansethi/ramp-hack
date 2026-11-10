@@ -238,7 +238,8 @@ def _assert_line_edits(source: Path, dest: Path, expected: int) -> None:
             key = key[1:].strip()
         assert key in _METADATA_KEYS, key
         assert left.split(":", 1)[0] == right.split(":", 1)[0]
-    assert changed == expected
+    # Owner-reviewed rows already match, so a scenario may rewrite fewer lines.
+    assert changed <= expected
 
 
 def _assert_metadata_only(
@@ -280,33 +281,47 @@ def _assert_loader(
     reviewed_rates: frozenset[tuple[str, str]],
 ) -> None:
     ruleset = load_ruleset(dest)
+    source = load_ruleset(_ROOT / "rules")
+    source_rules = {rule.id: rule for rule in source.rules}
+    source_rates = {(rate.jurisdiction, rate.location): rate for rate in source.rates}
+    source_catalog = {entry.category: entry for entry in source.catalog}
     for rule in ruleset.rules:
+        original = source_rules[rule.id]
         if rule.id in reviewed_rule_ids:
+            assert rule.review_status == "reviewed"
+            assert rule.reviewed_by == _REVIEWER
             assert rule_is_active(rule)
         else:
-            assert rule.review_status == "candidate"
-            assert rule.reviewed_by is None
-            assert not rule_is_active(rule)
+            assert rule.review_status == original.review_status
+            assert rule.reviewed_by == original.reviewed_by
+            assert rule_is_active(rule) == rule_is_active(original)
     for rate in ruleset.rates:
         key = (rate.jurisdiction, rate.location)
+        original_rate = source_rates[key]
         if key in reviewed_rates:
+            assert rate.review_status == "reviewed"
+            assert rate.reviewed_by == _REVIEWER
             assert rate_is_active(rate)
         else:
-            assert rate.review_status == "candidate"
-            assert rate.reviewed_by is None
-            assert not rate_is_active(rate)
+            assert rate.review_status == original_rate.review_status
+            assert rate.reviewed_by == original_rate.reviewed_by
+            assert rate_is_active(rate) == rate_is_active(original_rate)
     for entry in ruleset.catalog:
+        original_entry = source_catalog[entry.category]
         if entry.category in signed_categories:
+            assert entry.status == "signed"
+            assert entry.signed_off_by == _REVIEWER
             assert catalog_is_signed(entry)
         else:
-            assert entry.status == "candidate"
-            assert entry.signed_off_by is None
-            assert not catalog_is_signed(entry)
+            assert entry.status == original_entry.status
+            assert entry.signed_off_by == original_entry.signed_off_by
+            assert catalog_is_signed(entry) == catalog_is_signed(original_entry)
     placeholder = next(
         rule for rule in ruleset.rules if rule.id == "PLACEHOLDER:CA-DP-001"
     )
-    assert placeholder.review_status == "candidate"
-    assert placeholder.reviewed_by is None
+    original_placeholder = source_rules["PLACEHOLDER:CA-DP-001"]
+    assert placeholder.review_status == original_placeholder.review_status
+    assert placeholder.reviewed_by == original_placeholder.reviewed_by
     assert not rule_is_active(placeholder)
 
 
