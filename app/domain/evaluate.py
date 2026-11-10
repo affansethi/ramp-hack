@@ -81,7 +81,7 @@ def evaluate_line(ruleset: Ruleset, request: EngineLineRequest) -> EngineLineRes
             if shipping is None:
                 return _error("INEXACT_CENTS")
             base += shipping
-        rendered = _expected_cents(base * rate, ruleset)
+        rendered = _expected_cents(base * rate, ruleset, request.jurisdiction)
         if rendered is None:
             return _error("INEXACT_CENTS")
         expected = rendered
@@ -146,11 +146,14 @@ def _blank(value: str | None) -> bool:
     return value is None or not value.strip()
 
 
-def _expected_cents(amount: Decimal, ruleset: Ruleset) -> str | None:
+def _expected_cents(amount: Decimal, ruleset: Ruleset, jurisdiction: str) -> str | None:
     exact = emit_cents(amount)
     if exact is not None:
         return exact
-    if not rounding_is_active(ruleset.rounding):
+    basis = ruleset.rounding
+    if not rounding_is_active(basis):
+        return None
+    if basis is None or not basis.jurisdiction or basis.jurisdiction != jurisdiction:
         return None
     quantized = amount.quantize(CENT, rounding=ROUND_HALF_UP)
     return f"{quantized:.2f}"

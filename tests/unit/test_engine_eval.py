@@ -180,6 +180,10 @@ def test_owner_rounding_basis_quantizes_an_inexact_product() -> None:
     assert refused.outcome == "error"
     assert refused.error_code == "INEXACT_CENTS"
     _no_amount(refused)
+    outside = evaluate_line(ruleset, _wa_request(line_amount="10.00", shipping="0.00"))
+    assert outside.outcome == "error"
+    assert outside.error_code == "INEXACT_CENTS"
+    _no_amount(outside)
 
 
 def test_inexact_product_is_an_error_with_no_amount() -> None:
