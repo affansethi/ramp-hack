@@ -49,6 +49,7 @@ class DemoSession(Base):
     person_id: Mapped[str] = mapped_column(ForeignKey("persons.id"))
     org_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"))
     created_at: Mapped[str] = mapped_column(String(32))
+    csrf_token: Mapped[str | None] = mapped_column(String(128), unique=True)
 
 
 class IdempotencyKey(Base):

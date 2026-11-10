@@ -9,6 +9,7 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.adapters.extractor import ForbiddenField, parse_extraction
 from app.clock import utcnow
 from app.demo.scenarios import LineInput, Scenario
 from app.domain.errors import DomainError
@@ -38,6 +39,11 @@ from app.models import (
 from app.seed import ENTITY_NAME
 
 SUPPORTED_CATEGORIES = frozenset({"REMOTE_ACCESS_SAAS", "COMPUTER_HARDWARE"})
+# Mirrors the extractor's category proposals. Any other label stays out of the
+# payload so it cannot fail the schema; the purchase still stores it.
+_EXTRACTION_CATEGORIES = frozenset(
+    {"REMOTE_ACCESS_SAAS", "COMPUTER_HARDWARE", "NO_SUPPORTED_CATEGORY"}
+)
 
 
 @dataclass(frozen=True)
@@ -51,6 +57,12 @@ class IngestResult:
 def ingest_scenario(session: Session, scenario: Scenario, org_id: str) -> IngestResult:
     if scenario.currency != "USD":
         raise DomainError("UNSUPPORTED_CURRENCY", "Only USD is in the demo.", 422)
+    # In-memory schema gate. Replay does not open a recording. A forbidden key
+    # stops here, before the existing fact writer.
+    try:
+        parse_extraction(_printed_extraction(scenario))
+    except ForbiddenField:
+        return _forbidden_field_job(session, org_id)
     return _ingest(
         session,
         org_id=org_id,
@@ -69,6 +81,89 @@ def ingest_scenario(session: Session, scenario: Scenario, org_id: str) -> Ingest
         extraction_mode="replay",
         transaction_id=scenario.event_id,
     )
+
+
+def _printed_extraction(scenario: Scenario) -> dict[str, object]:
+    """Call A/B payload from printed fields. Place and seats stay evidence."""
+    evidence: list[dict[str, object]] = [
+        {"page": 1, "passage": f"Synthetic invoice {scenario.invoice_number}"}
+    ]
+    lines: list[dict[str, object]] = []
+    ship_to: str | None = None
+    for line in scenario.lines:
+        lines.append(_printed_line(line))
+        passage = _printed_evidence(line)
+        if passage:
+            evidence.append({"page": 1, "passage": passage})
+        if ship_to is None and line.location_name:
+            ship_to = line.location_name
+    call_b: dict[str, object] = {"rationale": "Printed invoice fields."}
+    if scenario.category in _EXTRACTION_CATEGORIES:
+        call_b["category"] = scenario.category
+    return {
+        "call_a": {
+            "vendor_name": scenario.vendor,
+            "invoice_date": scenario.invoice_date,
+            "currency": scenario.currency,
+            "bill_to": scenario.bill_to or None,
+            "ship_to": ship_to,
+            "lines": lines,
+            "evidence": evidence,
+        },
+        "call_b": call_b,
+    }
+
+
+def _printed_line(line: LineInput) -> dict[str, object]:
+    printed: dict[str, object] = {
+        "description": line.description,
+        "quantity": line.quantity,
+        "unit_price": line.line_amount,
+        "line_amount": line.line_amount,
+    }
+    if line.tax_charged is not None:
+        printed["tax_charged"] = line.tax_charged
+    if line.tax_jurisdiction:
+        printed["printed_tax_jurisdiction"] = line.tax_jurisdiction
+    if line.service_start:
+        printed["service_period_start"] = line.service_start
+    if line.service_end:
+        printed["service_period_end"] = line.service_end
+    if line.shipping is not None:
+        printed["shipping"] = line.shipping
+    return printed
+
+
+def _printed_evidence(line: LineInput) -> str:
+    parts: list[str] = []
+    if line.location_name or line.location_state:
+        where = line.location_name or line.location_state or ""
+        parts.append(f"Printed location {where}")
+    if line.seats is not None:
+        parts.append(f"Printed seat count {line.seats}")
+    if line.delivery_date:
+        parts.append(f"Printed delivery date {line.delivery_date}")
+    if line.tax_jurisdiction:
+        parts.append(f"Tax jurisdiction printed as {line.tax_jurisdiction}")
+    return ". ".join(parts)
+
+
+def _forbidden_field_job(session: Session, org_id: str) -> IngestResult:
+    """Record the refusal without a purchase, fact, determination, or amount."""
+    job = Job(
+        id=str(uuid4()),
+        org_id=org_id,
+        kind="advance",
+        purchase_id=None,
+        status="FAILED",
+        lease_until=None,
+        attempts=0,
+        error_code="FORBIDDEN_FIELD",
+        created_at=utcnow(),
+    )
+    session.add(job)
+    session.flush()
+    return IngestResult(None, job.id, False, job.id)
 
 
 def ingest_webhook(
