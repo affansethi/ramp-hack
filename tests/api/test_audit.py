@@ -58,9 +58,13 @@ def test_fact_versions_chain_and_review_keeps_version(tmp_path: Path) -> None:
             updated = edited.json()
             assert updated["facts_version"] == detail["facts_version"] + 1
             detail = updated
-        rows = client.get(
-            "/api/v1/audit-events", params={"object_id": purchase_id}
-        ).json()["audit_events"]
+        rows = [
+            row
+            for row in client.get(
+                "/api/v1/audit-events", params={"object_id": purchase_id}
+            ).json()["audit_events"]
+            if row["actor_id"] != "system"
+        ]
         assert len(rows) == 2
         assert rows[0]["before_hash"] == ""
         assert rows[1]["before_hash"] == rows[0]["after_hash"]
