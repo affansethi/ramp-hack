@@ -4,7 +4,6 @@ import csv
 import io
 import json
 from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal
 from hashlib import sha256
 from uuid import uuid4
 

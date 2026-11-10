@@ -34,7 +34,7 @@ def test_case_1_liability_total_copies_the_engine_string(
             "line_count": 1,
         }
     ]
-    assert "0.00" != rows[0]["total"]["value"] or engine == "0.00"
+    assert rows[0]["total"]["value"] != "0.00" or engine == "0.00"
     assert totals["refund_candidates"]["count"] == 0
     assert totals["refund_candidates"]["total"] is None
     assert totals["refund_candidates"]["label"] == "not recovered cash"
