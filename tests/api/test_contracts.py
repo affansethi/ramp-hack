@@ -12,7 +12,7 @@ from app.clock import utcnow
 from app.config import load_settings
 from app.main import create_app
 from app.models import Determination, Organization, Purchase, ReviewDecision
-from tests.api.test_flow import GOOD_ENV, _activate, _headers, _run
+from tests.api.test_flow import GOOD_ENV, _activate, _headers, _run, login
 
 
 def _client(tmp_path: Path) -> TestClient:
@@ -46,10 +46,7 @@ def test_reads_skip_the_demo_header_and_mutations_write_nothing_without_it(
     tmp_path: Path,
 ) -> None:
     with _client(tmp_path) as client:
-        login = client.post(
-            "/api/v1/demo/login", json={}, headers=_headers("login-reads")
-        )
-        assert login.status_code == 200
+        login(client, "login-reads")
         created = _run(client, "case1", "case1-reads")
         purchase_id = created["purchase_id"]
         detail = client.get(f"/api/v1/purchases/{purchase_id}")
@@ -75,12 +72,7 @@ def test_reads_skip_the_demo_header_and_mutations_write_nothing_without_it(
 
 def test_same_review_key_replays_and_a_different_body_conflicts(tmp_path: Path) -> None:
     with _client(tmp_path) as client:
-        assert (
-            client.post(
-                "/api/v1/demo/login", json={}, headers=_headers("login-idem")
-            ).status_code
-            == 200
-        )
+        login(client, "login-idem")
         created = _run(client, "case1", "case1-idem")
         detail = client.get(f"/api/v1/purchases/{created['purchase_id']}").json()
         determination = detail["determinations"][0]
@@ -113,12 +105,7 @@ def test_same_review_key_replays_and_a_different_body_conflicts(tmp_path: Path) 
 
 def test_stale_expected_version_writes_nothing(tmp_path: Path) -> None:
     with _client(tmp_path) as client:
-        assert (
-            client.post(
-                "/api/v1/demo/login", json={}, headers=_headers("login-stale")
-            ).status_code
-            == 200
-        )
+        login(client, "login-stale")
         created = _run(client, "case1", "case1-stale")
         detail = client.get(f"/api/v1/purchases/{created['purchase_id']}").json()
         determination = detail["determinations"][0]
@@ -142,12 +129,7 @@ def test_stale_expected_version_writes_nothing(tmp_path: Path) -> None:
 
 def test_other_org_determination_is_not_found(tmp_path: Path) -> None:
     with _client(tmp_path) as client:
-        assert (
-            client.post(
-                "/api/v1/demo/login", json={}, headers=_headers("login-org")
-            ).status_code
-            == 200
-        )
+        login(client, "login-org")
         determination_id = _insert_other_org(client)
         refused = client.post(
             f"/api/v1/determinations/{determination_id}/review",
