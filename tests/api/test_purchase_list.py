@@ -18,7 +18,7 @@ from app.main import create_app
 from app.models import Determination, Purchase
 from app.seed import ORG_ID
 from app.worker.poller import poll_once
-from tests.api.test_flow import GOOD_ENV, _activate, _headers, _run
+from tests.api.test_flow import GOOD_ENV, _activate, _headers, _run, login
 
 SUMMARY_FIELDS = {
     "id",
@@ -57,8 +57,7 @@ def _client(tmp_path: Path) -> TestClient:
 
 
 def _login(client: TestClient) -> None:
-    response = client.post("/api/v1/demo/login", json={}, headers=_headers("login"))
-    assert response.status_code == 200, response.text
+    login(client)
 
 
 def _listing(client: TestClient, query: str = "") -> dict:

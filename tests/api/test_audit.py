@@ -14,16 +14,11 @@ from app.domain.commands import _audit
 from app.models import AuditEvent, DemoSession, Organization, Person
 from app.seed import ORG_ID, PERSON_ID
 from tests.api.test_contracts import _client, _review_body
-from tests.api.test_flow import _headers, _run
+from tests.api.test_flow import _headers, _run, login
 
 
 def _login(client: TestClient) -> None:
-    assert (
-        client.post(
-            "/api/v1/demo/login", json={}, headers=_headers("login")
-        ).status_code
-        == 200
-    )
+    login(client)
 
 
 def test_fact_versions_chain_and_review_keeps_version(tmp_path: Path) -> None:
@@ -174,6 +169,7 @@ def test_pagination_legacy_rows_and_cross_org_denial(tmp_path: Path) -> None:
                     person_id="other-person",
                     org_id="other-org",
                     created_at=utcnow(),
+                    csrf_token="other-session-csrf",
                 )
             )
             session.commit()
