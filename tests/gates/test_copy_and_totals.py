@@ -4,6 +4,7 @@ Tests only. Production copy, rules, and domain code are not edited here.
 The planted scan fixture is not a file under rules/.
 """
 
+import ast
 import inspect
 import io
 import json
@@ -33,7 +34,7 @@ from app.models import (
 )
 from app.seed import ENTITY_NAME, ORG_ID, PERSON_ID
 from app.worker.poller import poll_once
-from tests.api.test_flow import _headers, _run
+from tests.gates.conftest import _headers, _run
 
 ROOT = Path(__file__).resolve().parents[2]
 EXCLUDED_AMOUNT = "404.04"
@@ -75,14 +76,6 @@ _ALLOWED_FIELDS = {"line_net", "line_net_amount"}
 _FILED_OR_PAID = re.compile(r"\b(?:filed|paid)\b", re.IGNORECASE)
 _SIMULATED = re.compile(r"\bsimulated\b", re.IGNORECASE)
 _BARE_ZERO = re.compile(r"^0+(?:\.0+)?$")
-_DOCSTRING_SKIP = {
-    tokenize.NL,
-    tokenize.NEWLINE,
-    tokenize.INDENT,
-    tokenize.DEDENT,
-    tokenize.COMMENT,
-    tokenize.ENCODING,
-}
 
 
 @dataclass(frozen=True)
@@ -124,26 +117,65 @@ def _read_tree(path: Path) -> str:
     return "\n".join(parts)
 
 
-def _is_docstring(tokens: list[tokenize.TokenInfo], index: int) -> bool:
-    if tokens[index].type != tokenize.STRING:
-        return False
-    previous = index - 1
-    while previous >= 0 and tokens[previous].type in _DOCSTRING_SKIP:
-        previous -= 1
-    if previous < 0:
-        return True
-    return tokens[previous].type == tokenize.OP and tokens[previous].string == ":"
+def _docstring_spans(source: str) -> list[tuple[int, int, int, int]]:
+    """Line/col spans of real docstrings: a bare string first in a body."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    spans: list[tuple[int, int, int, int]] = []
+
+    def _collect(
+        node: ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> None:
+        body = node.body
+        if (
+            body
+            and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)
+            and body[0].end_lineno is not None
+        ):
+            spans.append(
+                (
+                    body[0].lineno,
+                    body[0].col_offset,
+                    body[0].end_lineno,
+                    body[0].end_col_offset or 0,
+                )
+            )
+
+    _collect(tree)
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            _collect(node)
+    return spans
+
+
+def _in_docstring(
+    spans: list[tuple[int, int, int, int]],
+    start: tuple[int, int],
+    end: tuple[int, int],
+) -> bool:
+    return any(
+        (start >= (span[0], span[1]) and end <= (span[2], span[3])) for span in spans
+    )
 
 
 def python_scan_text(source: str) -> str:
     """Code and string literals, without comments or docstrings."""
+    spans = _docstring_spans(source)
     try:
         tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
     except (tokenize.TokenError, IndentationError):
         return source
     parts: list[str] = []
-    for index, token in enumerate(tokens):
-        if token.type == tokenize.COMMENT or _is_docstring(tokens, index):
+    for token in tokens:
+        if token.type == tokenize.COMMENT:
+            continue
+        if token.type == tokenize.STRING and _in_docstring(
+            spans, token.start, token.end
+        ):
             if "\n" in token.string:
                 parts.append("\n")
             continue
@@ -560,6 +592,28 @@ def test_rg2_allows_line_net_and_not_recovered_cash(text: str) -> None:
     assert claim_violations(text) == []
 
 
+def test_rg2_scanner_keeps_dict_string_values() -> None:
+    source = 'RESPONSE = {"message": "your savings total of 5.00"}\n'
+    scanned = python_scan_text(source)
+    assert "savings" in scanned
+    assert claim_violations(scanned)
+
+
+def test_rg2_scanner_strips_real_docstrings_but_keeps_code() -> None:
+    source = (
+        '"""Module claim: no savings here."""\n'
+        "net = liabilities - refunds\n"
+        "def handler():\n"
+        '    """Function claim: no recovered here."""\n'
+        '    return {"message": "ok"}\n'
+    )
+    scanned = python_scan_text(source)
+    assert "savings" not in scanned
+    assert "recovered" not in scanned
+    assert "net" in scanned
+    assert claim_violations(scanned)
+
+
 def test_rg2_scanner_visits_models_api_and_web(tmp_path: Path) -> None:
     app = tmp_path / "app"
     (app / "api").mkdir(parents=True)
@@ -570,7 +624,8 @@ def test_rg2_scanner_visits_models_api_and_web(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     (app / "api" / "routes.py").write_text(
-        'recovered_total = "100.00"\n',
+        'recovered_total = "100.00"\n'
+        'RESPONSE = {"message": "your savings total of 5.00"}\n',
         encoding="utf-8",
     )
     (app / "contracts" / "money.py").write_text(
