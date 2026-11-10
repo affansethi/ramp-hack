@@ -1,4 +1,8 @@
-"""Commands and read models. Mutations require Idempotency-Key and a demo header."""
+"""Commands and read models.
+
+Mutations require Idempotency-Key, the demo header, and the login CSRF token.
+The shared guard is MutationGuardMiddleware, so a route added later inherits it.
+"""
 
 import json
 from collections.abc import Iterator
@@ -12,6 +16,7 @@ from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.orm import Session
 
 from app.adapters.ramp import signature_matches
+from app.api.guards import COOKIE, new_csrf_token
 from app.api.idempotency import begin, finish
 from app.api.serialize import meta, purchase_detail, purchase_summary
 from app.clock import utcnow
@@ -53,7 +58,6 @@ from app.models import (
 from app.seed import ORG_ID, PERSON_ID
 
 router = APIRouter()
-COOKIE = "taxleak_session"
 
 
 class LoginBody(BaseModel):
@@ -124,18 +128,36 @@ def get_db(request: Request) -> Iterator[Session]:
 Db = Annotated[Session, Depends(get_db)]
 
 
-def _header(request: Request) -> None:
-    if request.headers.get("x-requested-with") != "taxleak":
-        raise DomainError("FORBIDDEN", "Missing X-Requested-With: taxleak.", 403)
-
-
 def _viewer(request: Request, session: Session) -> DemoSession:
-    if request.method != "GET":
-        _header(request)
+    """Actor from the session cookie. Mutation guards run before this."""
     row = session.get(DemoSession, request.cookies.get(COOKIE, ""))
     if row is None:
         raise DomainError("UNAUTHORIZED", "Sign in.", 401)
     return row
+
+
+def _login_response(
+    request: Request, session: Session, stored: dict[str, object]
+) -> JSONResponse:
+    """JSON carries csrf_token and never session_id. The cookie is HttpOnly."""
+    body = JSONResponse(
+        {key: value for key, value in stored.items() if key != "session_id"}
+    )
+    token = stored.get("csrf_token")
+    if isinstance(token, str):
+        demo = session.scalar(
+            select(DemoSession).where(DemoSession.csrf_token == token)
+        )
+        if demo is not None:
+            body.set_cookie(
+                COOKIE,
+                demo.id,
+                httponly=True,
+                samesite="lax",
+                secure=request.url.scheme == "https",
+                path="/",
+            )
+    return body
 
 
 def _key(request: Request) -> str | None:
@@ -144,7 +166,6 @@ def _key(request: Request) -> str | None:
 
 @router.post("/demo/login")
 def login(body: LoginBody, request: Request, session: Db) -> Response:
-    _header(request)
     canonical = body.model_dump_json()
     stored = begin(session, ORG_ID, _key(request), canonical)
     if stored is None:
@@ -156,6 +177,7 @@ def login(body: LoginBody, request: Request, session: Db) -> Response:
             person_id=person.id,
             org_id=person.org_id,
             created_at=utcnow(),
+            csrf_token=new_csrf_token(),
         )
         session.add(demo)
         session.flush()
@@ -163,14 +185,10 @@ def login(body: LoginBody, request: Request, session: Db) -> Response:
             **meta(request.app.state.settings),
             "person_id": person.id,
             "person_name": person.name,
-            "session_id": demo.id,
+            "csrf_token": demo.csrf_token,
         }
         finish(session, ORG_ID, _key(request) or "", canonical, stored)
-    response = JSONResponse(stored)
-    session_id = stored.get("session_id")
-    if isinstance(session_id, str):
-        response.set_cookie(COOKIE, session_id, httponly=True, samesite="lax", path="/")
-    return response
+    return _login_response(request, session, stored)
 
 
 @router.post("/demo/reset")
