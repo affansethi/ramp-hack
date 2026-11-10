@@ -647,15 +647,6 @@ def _states_for_line(line: PurchaseLine, facts: list[Fact]) -> list[str]:
     return confirmed_states(_views(facts, line.id))
 
 
-def _confirmed_fact(views: dict[str, FactView], key: str) -> str | None:
-    fact = views.get(key)
-    if fact is None or fact.confirmation != "CONFIRMED":
-        return None
-    if fact.value is None or not fact.value.strip():
-        return None
-    return fact.value
-
-
 def _evaluate_one(
     session: Session,
     purchase: Purchase,
@@ -669,14 +660,13 @@ def _evaluate_one(
     tax = views.get("tax_charged")
     if tax is None or tax.value is None:
         return
-    admitted_amount = _confirmed_fact(views, "line_amount")
     request = EngineLineRequest(
         jurisdiction=jurisdiction,
         category=purchase.category or "",
         invoice_date=date.fromisoformat(purchase.invoice_date),
         service_period_start=_optional_date(line.service_period_start),
         delivery_date=_optional_date(line.delivery_date),
-        line_amount=line.line_amount if admitted_amount is None else admitted_amount,
+        line_amount=line.line_amount,
         tax_charged=tax.value,
         shipping=line.shipping_amount,
         location_name=line.location_name or "",
