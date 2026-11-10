@@ -74,11 +74,12 @@ def _approve(client: TestClient, purchase_id: str) -> str:
     )
     assert approved.status_code == 200, approved.text
     totals = client.get("/api/v1/totals").json()
-    assert totals["approved_liabilities"] == [
+    assert totals["approved_liabilities"]["by_jurisdiction"] == [
         {
             "jurisdiction": "WA",
             "period": "2026Q4",
-            "amount": {"value": "151.92", "currency": "USD"},
+            "total": {"value": "151.92", "currency": "USD"},
+            "line_count": 1,
         }
     ]
     return str(determination["id"])
@@ -296,7 +297,10 @@ def test_same_ocr_on_an_exact_bill_keeps_the_approval(
     assert detail["determinations"][0]["unit_status"] == "APPROVED"
     assert detail["possible_duplicate_ids"] == []
     totals = client.get("/api/v1/totals").json()
-    assert totals["approved_liabilities"][0]["amount"]["value"] == "151.92"
+    assert (
+        totals["approved_liabilities"]["by_jurisdiction"][0]["total"]["value"]
+        == "151.92"
+    )
     with client.app.state.ctx.session_factory() as session:
         purchase = session.get(Purchase, purchase_id)
         assert purchase is not None
@@ -455,8 +459,8 @@ def _assert_receipt_invalidated(
     assert tax["value"] == "0.00"
     assert tax["confirmation"] == "UNCONFIRMED"
     totals = client.get("/api/v1/totals").json()
-    assert totals["approved_liabilities"] == []
-    assert totals["approved_liabilities_message"] == "No approved liabilities"
+    assert totals["approved_liabilities"]["by_jurisdiction"] == []
+    assert totals["approved_liabilities"]["message"] == "No approved liabilities"
     with client.app.state.ctx.session_factory() as session:
         row = session.get(Determination, determination_id)
         assert row is not None
