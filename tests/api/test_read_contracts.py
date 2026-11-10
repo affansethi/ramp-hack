@@ -49,6 +49,7 @@ _DETERMINATION_KEYS = {
     "error_code",
     "engine_request",
     "engine_response",
+    "refund_letter_id",
     "rule_source_url",
 }
 
