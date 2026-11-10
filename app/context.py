@@ -1,10 +1,11 @@
 """Runtime handles for one process: settings, sessions, rules directory."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.adapters.ramp import RampSimulator
 from app.config import Settings
 from app.db import init_database
 
@@ -16,6 +17,7 @@ class AppContext:
     settings: Settings
     session_factory: sessionmaker[Session]
     rules_dir: Path
+    ramp: RampSimulator = field(default_factory=RampSimulator)
 
 
 def build_context(settings: Settings) -> AppContext:

@@ -75,13 +75,19 @@ def _create(
 ) -> str:
     # Only synthetic inputs vary; production demo fixtures remain untouched.
     monkeypatch.setattr("app.api.routes.get_scenario", lambda _: scenario)
+    monkeypatch.setattr("app.domain.pipeline.get_scenario", lambda _: scenario)
+    client.app.state.ctx.ramp.transactions[scenario.event_id] = {
+        "currency_code": "USD",
+        "entity_amount": scenario.entity_amount,
+    }
     response = client.post(
         "/api/v1/demo/events",
         json={"scenario": scenario.id},
         headers={"Idempotency-Key": "routing-event"},
     )
     assert response.status_code == 200, response.text
-    return response.json()["purchase_id"]
+    assert poll_once(client.app.state.ctx) == 1
+    return client.get(f"/api/v1/jobs/{response.json()['job_id']}").json()["purchase_id"]
 
 
 def _advance(client: TestClient, purchase_id: str) -> dict:

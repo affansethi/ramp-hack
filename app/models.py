@@ -330,6 +330,7 @@ class Job(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     org_id: Mapped[str] = mapped_column(String(36), index=True)
     kind: Mapped[str] = mapped_column(String(32))
+    input_payload: Mapped[str | None] = mapped_column(Text, nullable=True)
     purchase_id: Mapped[str | None] = mapped_column(
         String(36), nullable=True, index=True
     )

@@ -15,3 +15,11 @@ def upgrade_audit_hashes(engine: Engine) -> None:
                 connection.execute(
                     text(f"ALTER TABLE audit_events ADD COLUMN {name} VARCHAR(64)")
                 )
+
+
+def upgrade_fetch_input(engine: Engine) -> None:
+    """Keep existing local scratch databases usable before the Alembic baseline."""
+    with engine.begin() as connection:
+        columns = {column["name"] for column in inspect(connection).get_columns("jobs")}
+        if "input_payload" not in columns:
+            connection.execute(text("ALTER TABLE jobs ADD COLUMN input_payload TEXT"))
