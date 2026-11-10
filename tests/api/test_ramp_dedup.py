@@ -127,6 +127,34 @@ def test_bill_then_card_uses_the_same_rule(
         assert session.scalar(select(func.count()).select_from(Purchase)) == 1
 
 
+def test_case_and_whitespace_variants_still_match(
+    signed_client: TestClient,  # noqa: F811
+) -> None:
+    client = signed_client
+    _put(
+        client,
+        key="card-norm",
+        bill=False,
+        invoice="  inv-26 ",
+        vendor="synthetic vendor",
+    )
+    _put(
+        client,
+        key="bill-norm",
+        bill=True,
+        invoice="INV-26",
+        vendor="  Synthetic Vendor  ",
+    )
+    _send(client, "evt-norm-card", "transactions.receipt_added", "card-norm")
+    _send(client, "evt-norm-bill", "bills.created", "bill-norm")
+    with client.app.state.ctx.session_factory() as session:
+        rows = list(session.scalars(select(Purchase)).all())
+        assert len(rows) == 1
+    detail = client.get(f"/api/v1/purchases/{rows[0].id}").json()
+    assert detail["possible_duplicate_ids"] == []
+    assert detail["queue"] != "needs_human_review"
+
+
 def test_different_invoice_numbers_stay_two_purchases(
     signed_client: TestClient,  # noqa: F811
 ) -> None:
@@ -136,7 +164,12 @@ def test_different_invoice_numbers_stay_two_purchases(
     _send(client, "evt-a", "transactions.receipt_added", "card-a")
     _send(client, "evt-b", "bills.created", "bill-b")
     with client.app.state.ctx.session_factory() as session:
-        assert session.scalar(select(func.count()).select_from(Purchase)) == 2
+        rows = list(session.scalars(select(Purchase)).all())
+        assert len(rows) == 2
+    for row in rows:
+        detail = client.get(f"/api/v1/purchases/{row.id}").json()
+        assert detail["possible_duplicate_ids"] == []
+        assert detail["queue"] != "needs_human_review"
 
 
 def test_ambiguous_date_keeps_both_and_names_them(
@@ -168,7 +201,15 @@ def test_ambiguous_amount_keeps_both(
     _send(client, "evt-amt1", "transactions.receipt_added", "card-amt")
     _send(client, "evt-amt2", "bills.created", "bill-amt")
     with client.app.state.ctx.session_factory() as session:
-        assert session.scalar(select(func.count()).select_from(Purchase)) == 2
+        rows = list(session.scalars(select(Purchase)).all())
+        assert len(rows) == 2
+        ids = {row.id for row in rows}
+    first = client.get(f"/api/v1/purchases/{rows[0].id}").json()
+    second = client.get(f"/api/v1/purchases/{rows[1].id}").json()
+    assert set(first["possible_duplicate_ids"]) == ids - {rows[0].id}
+    assert set(second["possible_duplicate_ids"]) == ids - {rows[1].id}
+    assert first["queue"] != "needs_human_review"
+    assert second["queue"] != "needs_human_review"
 
 
 def test_blank_or_invalid_dates_stay_two_and_are_named(
