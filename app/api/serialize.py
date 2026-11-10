@@ -329,7 +329,7 @@ def _possible_duplicate_ids(session: Session, purchase: Purchase) -> list[str]:
         select(AuditEvent).where(
             AuditEvent.org_id == purchase.org_id,
             AuditEvent.object_id == purchase.id,
-            AuditEvent.command.like(prefix + "%"),
+            AuditEvent.command.startswith(prefix, autoescape=True),
         )
     ).all()
     found: list[str] = []
