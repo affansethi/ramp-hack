@@ -12,7 +12,16 @@ class Base(DeclarativeBase):
     pass
 
 
+def driver_url(url: str) -> str:
+    """Pin the psycopg (v3) driver for a bare ``postgresql://`` URL."""
+    for prefix in ("postgresql://", "postgres://"):
+        if url.startswith(prefix):
+            return "postgresql+psycopg://" + url[len(prefix) :]
+    return url
+
+
 def make_engine(url: str) -> Engine:
+    url = driver_url(url)
     connect_args = (
         {"check_same_thread": False, "timeout": 30} if url.startswith("sqlite") else {}
     )
@@ -28,10 +37,24 @@ def init_database(url: str) -> sessionmaker[Session]:
     from app.seed import seed
 
     engine = make_engine(url)
-    if url.startswith("postgresql"):
+    if url.startswith(("postgresql", "postgres://")):
+        # Hosted Postgres: Alembic is the only schema path.
         _alembic_upgrade(url)
     else:
+        # Local SQLite scratch: create_all, then the legacy local upgrades so an
+        # older scratch database keeps working.
+        from app.migrations import (
+            upgrade_audit_hashes,
+            upgrade_fetch_input,
+            upgrade_session_csrf,
+            upgrade_workpapers,
+        )
+
         Base.metadata.create_all(engine)
+        upgrade_audit_hashes(engine)
+        upgrade_fetch_input(engine)
+        upgrade_session_csrf(engine)
+        upgrade_workpapers(engine)
     factory = make_session_factory(engine)
     with session_scope(factory) as session:
         seed(session)
@@ -43,7 +66,8 @@ def _alembic_upgrade(url: str) -> None:
     from alembic.config import Config
 
     config = Config("alembic.ini")
-    config.set_main_option("sqlalchemy.url", url)
+    # ConfigParser interpolates "%"; percent-encoded credentials need "%%".
+    config.set_main_option("sqlalchemy.url", driver_url(url).replace("%", "%%"))
     command.upgrade(config, "head")
 
 
