@@ -63,16 +63,32 @@ def _reviewed_ruleset() -> Ruleset:
     return Ruleset(rules=(rule,), rates=(rate,), catalog=(), version="test")
 
 
-def test_shipped_rules_are_inactive() -> None:
+def test_placeholder_stays_inactive_after_owner_signoff() -> None:
     ruleset = load_ruleset(Path("rules"))
     assert ruleset.rules
-    assert not any(rule_is_active(rule) for rule in ruleset.rules)
-    assert not any(rate_is_active(rate) for rate in ruleset.rates)
+    placeholders = [
+        rule for rule in ruleset.rules if rule.id.startswith("PLACEHOLDER:")
+    ]
+    assert placeholders
+    assert all(not rule_is_active(rule) for rule in placeholders)
+    assert all(rule.reviewed_by is None for rule in placeholders)
+    signed = [rule for rule in ruleset.rules if not rule.id.startswith("PLACEHOLDER:")]
+    assert signed
+    assert all(rule_is_active(rule) for rule in signed)
+    assert all(rate_is_active(rate) for rate in ruleset.rates)
 
 
-def test_inactive_rules_emit_no_amount() -> None:
-    result = evaluate_line(load_ruleset(Path("rules")), _wa_request())
+def test_unsigned_copy_emits_no_amount(tmp_path: Path) -> None:
+    dest = tmp_path / "rules"
+    dest.mkdir()
+    for name in ("entries.yaml", "rates.yaml", "catalog.yaml"):
+        text = Path("rules", name).read_text(encoding="utf-8")
+        text = text.replace("review_status: reviewed", "review_status: candidate")
+        text = text.replace("reviewed_by: AF", "reviewed_by:")
+        (dest / name).write_text(text, encoding="utf-8")
+    result = evaluate_line(load_ruleset(dest), _wa_request())
     assert result.outcome == "unsupported"
+    assert result.rule_source_url is None
     assert result.expected_tax is None
     assert result.adjustment_amount is None
     assert result.direction is None
@@ -85,6 +101,7 @@ def test_reviewed_rule_copies_a_decimal_string() -> None:
     assert result.adjustment_amount == "151.92"
     assert result.direction == "LIABILITY"
     assert result.rule_reference == "WA-RAS-001"
+    assert result.rule_source_url == "https://example.test/wa"
     assert result.rate == "0.1055"
     assert result.location_code == "1726"
     assert isinstance(result.expected_tax, str)
@@ -109,6 +126,7 @@ def test_january_2027_transition_is_nhr_with_no_amount() -> None:
         ),
     )
     assert result.nhr_reason == "RULE_TRANSITION_UNRESOLVED"
+    assert result.rule_source_url is None
     assert result.adjustment_amount is None
     assert result.expected_tax is None
 
@@ -118,6 +136,7 @@ def _no_amount(result: EngineLineResult) -> None:
     assert result.adjustment_amount is None
     assert result.direction is None
     assert result.nhr_reason is None
+    assert result.rule_source_url is None
 
 
 def test_emit_cents_keeps_exact_cents_and_refuses_to_round() -> None:
@@ -230,6 +249,7 @@ def test_multi_state_net_is_unsupported_with_no_amount() -> None:
     result = evaluate_line(ruleset, _wa_request(state_count=2))
     assert result.outcome == "unsupported"
     assert result.nhr_reason == "ENGINE_UNSUPPORTED"
+    assert result.rule_source_url is None
     assert result.expected_tax is None
     assert result.adjustment_amount is None
     assert result.direction is None
@@ -261,5 +281,6 @@ def test_reviewed_placeholder_never_activates() -> None:
     )
     assert result.outcome == "unsupported"
     assert result.nhr_reason == "RULE_TRANSITION_UNRESOLVED"
+    assert result.rule_source_url is None
     assert result.expected_tax is None
     assert result.adjustment_amount is None

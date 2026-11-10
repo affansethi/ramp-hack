@@ -277,12 +277,14 @@ def _assert_db_has_no_amount(client: TestClient) -> None:
 
 
 def _approved_values(totals: dict[str, object]) -> list[str]:
-    rows = totals["approved_liabilities"]
+    liabilities = totals["approved_liabilities"]
+    assert isinstance(liabilities, dict)
+    rows = liabilities["by_jurisdiction"]
     assert isinstance(rows, list)
     values: list[str] = []
     for row in rows:
         assert isinstance(row, dict)
-        amount = row["amount"]
+        amount = row["total"]
         assert isinstance(amount, dict)
         value = amount["value"]
         assert isinstance(value, str)
@@ -290,16 +292,22 @@ def _approved_values(totals: dict[str, object]) -> list[str]:
     return values
 
 
+def _unreviewed(totals: dict[str, object]) -> int:
+    block = totals["unreviewed"]
+    assert isinstance(block, dict)
+    return sum(int(row["count"]) for row in block["by_direction"])
+
+
 def _assert_excluded(totals: dict[str, object], *amounts: str) -> None:
     values = _approved_values(totals)
     assert values == []
-    assert totals["approved_liabilities_message"] == "No approved liabilities"
+    assert totals["approved_liabilities"]["message"] == "No approved liabilities"
     for amount in amounts:
         assert amount not in values
     refunds = totals["refund_candidates"]
     assert isinstance(refunds, dict)
     assert refunds["count"] == 0
-    assert refunds["amount"] is None
+    assert refunds["total"] is None
     assert refunds["label"] == "not recovered cash"
 
 
@@ -658,8 +666,8 @@ def test_h5_forbidden_fields_leave_amounts_and_correction_awaits_review(
         assert [row for row in before_worker if row.is_current] == []
         before_totals = _totals(client, "h5-before-worker")
         _assert_excluded(before_totals, prior_amount)
-        assert before_totals["unreviewed_count"] == 0
-        assert before_totals["needs_human_review_count"] == 0
+        assert _unreviewed(before_totals) == 0
+        assert before_totals["open_needs_human_review"]["count"] == 0
         assert poll_once(client.app.state.ctx) == 1
         later = _detail(client, purchase_id, "h5-later")
         assert later["facts_version"] == facts_version + 1
@@ -690,5 +698,5 @@ def test_h5_forbidden_fields_leave_amounts_and_correction_awaits_review(
         assert json.loads(stored_new.engine_request)["line_amount"] == corrected
         after_totals = _totals(client, "h5-after-worker")
         _assert_excluded(after_totals, prior_amount, new_amount)
-        assert after_totals["unreviewed_count"] == 1
-        assert after_totals["needs_human_review_count"] == 0
+        assert _unreviewed(after_totals) == 1
+        assert after_totals["open_needs_human_review"]["count"] == 0

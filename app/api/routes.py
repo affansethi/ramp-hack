@@ -1,4 +1,8 @@
-"""Commands and read models. Mutations require Idempotency-Key and a demo header."""
+"""Commands and read models.
+
+Mutations require Idempotency-Key, the demo header, and the login CSRF token.
+The shared guard is MutationGuardMiddleware, so a route added later inherits it.
+"""
 
 import json
 import re
@@ -7,7 +11,7 @@ from datetime import date
 from typing import Annotated, Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import and_, delete, or_, select
@@ -15,6 +19,7 @@ from sqlalchemy.orm import Session
 from starlette.datastructures import QueryParams
 
 from app.adapters.ramp import signature_matches
+from app.api.guards import COOKIE, new_csrf_token
 from app.api.idempotency import begin, finish
 from app.api.serialize import meta, purchase_detail, purchase_summary
 from app.clock import utcnow
@@ -28,6 +33,7 @@ from app.domain.commands import (
     mark_workpaper_ready,
     refer_determination,
     review_determination,
+    workpaper_document,
 )
 from app.domain.errors import DomainError
 from app.domain.evaluate import quarter_key
@@ -58,7 +64,6 @@ from app.models import (
 from app.seed import ORG_ID, PERSON_ID
 
 router = APIRouter()
-COOKIE = "taxleak_session"
 
 
 class LoginBody(BaseModel):
@@ -112,6 +117,7 @@ class ReadyBody(BaseModel):
 
     expected_version: int
     reason: str
+    fingerprint: str | None = None
 
 
 def get_db(request: Request) -> Iterator[Session]:
@@ -129,18 +135,73 @@ def get_db(request: Request) -> Iterator[Session]:
 Db = Annotated[Session, Depends(get_db)]
 
 
-def _header(request: Request) -> None:
-    if request.headers.get("x-requested-with") != "taxleak":
-        raise DomainError("FORBIDDEN", "Missing X-Requested-With: taxleak.", 403)
-
-
 def _viewer(request: Request, session: Session) -> DemoSession:
-    if request.method != "GET":
-        _header(request)
+    """Actor from the session cookie. Mutation guards run before this."""
     row = session.get(DemoSession, request.cookies.get(COOKIE, ""))
     if row is None:
         raise DomainError("UNAUTHORIZED", "Sign in.", 401)
     return row
+
+
+def _upgrade_legacy_login(
+    session: Session, key: str, stored: dict[str, object]
+) -> dict[str, object]:
+    """A cached login from before CSRF stored session_id and no token.
+
+    Persist one token on that session and replace the stored body so a later
+    replay of the same Idempotency-Key does not mint another token.
+    """
+    current = stored.get("csrf_token")
+    if isinstance(current, str) and current:
+        return stored
+    session_id = stored.get("session_id")
+    if not isinstance(session_id, str) or not session_id:
+        return stored
+    demo = session.get(DemoSession, session_id)
+    if demo is None or demo.org_id != ORG_ID:
+        return stored
+    existing = demo.csrf_token
+    if isinstance(existing, str) and existing:
+        token = existing
+    else:
+        token = new_csrf_token()
+        demo.csrf_token = token
+        session.flush()
+    upgraded = {name: value for name, value in stored.items() if name != "session_id"}
+    upgraded["csrf_token"] = token
+    row = session.scalar(
+        select(IdempotencyKey).where(
+            IdempotencyKey.org_id == ORG_ID, IdempotencyKey.key == key
+        )
+    )
+    if row is not None:
+        row.response_body = json.dumps(upgraded)
+    return upgraded
+
+
+def _login_response(
+    request: Request, session: Session, key: str, stored: dict[str, object]
+) -> JSONResponse:
+    """JSON carries csrf_token and never session_id. The cookie is HttpOnly."""
+    stored = _upgrade_legacy_login(session, key, stored)
+    body = JSONResponse(
+        {key: value for key, value in stored.items() if key != "session_id"}
+    )
+    token = stored.get("csrf_token")
+    if isinstance(token, str) and token:
+        demo = session.scalar(
+            select(DemoSession).where(DemoSession.csrf_token == token)
+        )
+        if demo is not None:
+            body.set_cookie(
+                COOKIE,
+                demo.id,
+                httponly=True,
+                samesite="lax",
+                secure=request.url.scheme == "https",
+                path="/",
+            )
+    return body
 
 
 def _key(request: Request) -> str | None:
@@ -149,7 +210,6 @@ def _key(request: Request) -> str | None:
 
 @router.post("/demo/login")
 def login(body: LoginBody, request: Request, session: Db) -> Response:
-    _header(request)
     canonical = body.model_dump_json()
     stored = begin(session, ORG_ID, _key(request), canonical)
     if stored is None:
@@ -161,6 +221,7 @@ def login(body: LoginBody, request: Request, session: Db) -> Response:
             person_id=person.id,
             org_id=person.org_id,
             created_at=utcnow(),
+            csrf_token=new_csrf_token(),
         )
         session.add(demo)
         session.flush()
@@ -168,14 +229,10 @@ def login(body: LoginBody, request: Request, session: Db) -> Response:
             **meta(request.app.state.settings),
             "person_id": person.id,
             "person_name": person.name,
-            "session_id": demo.id,
+            "csrf_token": demo.csrf_token,
         }
         finish(session, ORG_ID, _key(request) or "", canonical, stored)
-    response = JSONResponse(stored)
-    session_id = stored.get("session_id")
-    if isinstance(session_id, str):
-        response.set_cookie(COOKIE, session_id, httponly=True, samesite="lax", path="/")
-    return response
+    return _login_response(request, session, _key(request) or "", stored)
 
 
 @router.post("/demo/reset")
@@ -530,7 +587,7 @@ def workpapers(body: WorkpaperBody, request: Request, session: Db) -> dict[str, 
     if stored is not None:
         return stored
     workpaper = create_workpaper(session, viewer.org_id, body.jurisdiction, body.period)
-    payload = _workpaper_json(request, workpaper)
+    payload = _workpaper_json(request, session, workpaper)
     finish(session, viewer.org_id, _key(request) or "", canonical, payload)
     return payload
 
@@ -551,17 +608,31 @@ def mark_ready(
         workpaper_id=workpaper_id,
         expected_version=body.expected_version,
         reason=body.reason,
+        fingerprint=body.fingerprint,
     )
-    payload = _workpaper_json(request, workpaper)
+    payload = _workpaper_json(request, session, workpaper)
     finish(session, viewer.org_id, _key(request) or "", canonical, payload)
     return payload
 
 
 @router.get("/workpapers/{workpaper_id}/export")
-def export(workpaper_id: str, request: Request, session: Db) -> Response:
+def export(
+    workpaper_id: str,
+    request: Request,
+    session: Db,
+    export_format: Annotated[Literal["csv", "json"], Query(alias="format")],
+) -> Response:
     viewer = _viewer(request, session)
-    text = export_workpaper(session, viewer.org_id, workpaper_id)
-    return Response(content=text, media_type="text/csv")
+    settings = request.app.state.settings
+    media_type, body = export_workpaper(
+        session,
+        viewer.org_id,
+        workpaper_id,
+        export_format,
+        data_mode=settings.data_mode.value,
+        engine_mode=settings.engine_mode.value,
+    )
+    return Response(content=body, media_type=media_type)
 
 
 _PAGE_MAX = 100
@@ -736,15 +807,10 @@ def _invoice_quarter(invoice_date: str) -> str | None:
         return None
 
 
-def _workpaper_json(request: Request, workpaper: Workpaper) -> dict[str, object]:
+def _workpaper_json(
+    request: Request, session: Session, workpaper: Workpaper
+) -> dict[str, object]:
     return {
         **meta(request.app.state.settings),
-        "id": workpaper.id,
-        "entity_name": workpaper.entity_name,
-        "jurisdiction": workpaper.jurisdiction,
-        "period": workpaper.period,
-        "version": workpaper.version,
-        "status": workpaper.status,
-        "fingerprint": workpaper.fingerprint,
-        "frozen_at": workpaper.frozen_at,
+        **workpaper_document(session, workpaper),
     }

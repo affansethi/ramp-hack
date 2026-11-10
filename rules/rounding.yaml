@@ -1,0 +1,14 @@
+# Owner-signed rounding basis. Agents must not invent a mode.
+# 2100.00 * 0.08875 is 186.375. NY Tax Law §1132(b) and 20 NYCRR 530.1
+# round a fraction of a cent: less than one-half cent drops, one-half cent
+# or more becomes a full cent. That is nearest-cent, half away from zero
+# for a positive tax amount. This file does not store an expected tax figure.
+rounding:
+  id: NY-NEAREST-CENT-001
+  jurisdiction: NY
+  mode: nearest_cent_half_up
+  applies_to: inexact_rate_product
+  source_url: https://www.tax.ny.gov/pubs_and_bulls/tg_bulletins/st/sales_tax_rates_additional_sales_taxes_and_fees.htm
+  review_status: reviewed
+  reviewed_by: AF
+  reviewed_at: "2026-11-09"
