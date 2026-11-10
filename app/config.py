@@ -32,6 +32,8 @@ class Settings:
     rules_dir: str
     ramp_webhook_secret: str
     llm_replay: bool
+    # Exact Origins. Empty when ORIGIN_ALLOWLIST is unset.
+    origin_allowlist: tuple[str, ...]
 
 
 def _parse_mode[M: StrEnum](
@@ -62,6 +64,14 @@ def _load_dotenv() -> None:
         os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
+def _origin_allowlist(environ: Mapping[str, str]) -> tuple[str, ...]:
+    """Comma-separated exact Origins. Blank or unset leaves the allowlist off."""
+    raw = environ.get("ORIGIN_ALLOWLIST", "").strip()
+    if not raw:
+        return ()
+    return tuple(part.strip() for part in raw.split(",") if part.strip())
+
+
 def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
     """Load and validate startup modes. Raises ModeGuardError on any violation."""
     if environ is None:
@@ -79,4 +89,5 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         rules_dir=env.get("RULES_DIR", "rules"),
         ramp_webhook_secret=env.get("RAMP_WEBHOOK_SECRET", ""),
         llm_replay=llm_mode is not LLMMode.LIVE,
+        origin_allowlist=_origin_allowlist(env),
     )

@@ -1,0 +1,26 @@
+# Affan / AF filing-basis strings for DRAFT outputs only.
+# These drafts are not sent. They are not verified filing advice.
+# They do not say a letter was sent. They do not say filed or paid
+# unless the same phrase says simulated.
+
+[ca_saas_vendor_tax]
+This is a DRAFT vendor letter for the synthetic demo. It is not sent.
+California Regulation 1502 treats remotely accessed prewritten computer
+software as not subject to sales and use tax for the signed CA-RAS-001
+window. A customer generally cannot claim a refund from CDTFA
+(McClain v. Sav-On Drugs). This note is demo research text, not verified
+filing advice.
+
+[ny_hardware_use_tax]
+This is a DRAFT New York form note for the synthetic demo. It is not
+filed and not paid. Filing, if shown, is simulated only. New York use
+tax on tangible computer hardware is sourced to confirmed delivery.
+See NY DTF, Use Tax for Businesses. This note is not verified filing
+advice.
+
+[wa_use_tax_journal]
+This is a DRAFT Washington use-tax journal note for the synthetic demo.
+It is not filed and not paid. Filing, if shown, is simulated only.
+Washington treats remote-access prewritten software as a retail sale;
+when the vendor charged none, the buyer records use tax. This note is
+not verified filing advice.

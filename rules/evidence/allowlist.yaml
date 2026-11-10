@@ -1,0 +1,13 @@
+# Official domains a content-verification source may cite (docs/content-verification.md).
+# A subdomain of a listed domain is allowed. Anything else may help find a source but is never cited.
+domains:
+  - app.leg.wa.gov      # Revised Code of Washington, WAC
+  - leg.wa.gov
+  - dor.wa.gov          # Washington Department of Revenue
+  - cdtfa.ca.gov        # California Department of Tax and Fee Administration
+  - leginfo.legislature.ca.gov
+  - ftb.ca.gov
+  - tax.ny.gov          # New York State Department of Taxation and Finance
+  - nysenate.gov        # New York consolidated laws
+  - govt.westlaw.com    # official publisher of NYCRR
+  - irs.gov

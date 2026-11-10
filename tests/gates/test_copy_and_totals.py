@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 import app.models  # noqa: F401
 from app.clock import utcnow
 from app.db import Base
-from app.domain.commands import export_workpaper
+from app.domain.commands import _document, _render_csv, export_workpaper
 from app.models import (
     Determination,
     Hold,
@@ -261,7 +261,11 @@ def held_violations(held: object) -> list[str]:
     if any(text != "purchase amount, not tax" for text in texts):
         problems.append("held label is not purchase amount, not tax")
     purchase = held.get("purchase_amount")
-    if (
+    if held.get("count") == 0:
+        # Nothing held: no purchase amount, and never a bare zero.
+        if purchase is not None:
+            problems.append("purchase amount with nothing held")
+    elif (
         not isinstance(purchase, dict)
         or purchase.get("currency") != "USD"
         or "value" not in purchase
@@ -316,7 +320,7 @@ def refund_total_violations(payload: dict[str, object]) -> list[str]:
     problems: list[str] = []
     if refund.get("label") != "not recovered cash":
         problems.append("refund candidates must be labeled not recovered cash")
-    amount = refund.get("amount")
+    amount = _refund_amount(refund)
     if refund.get("count") == 0 and amount is not None:
         problems.append("refund total without an approved candidate")
     if isinstance(amount, dict) and _is_bare_zero(str(amount.get("value"))):
@@ -329,10 +333,25 @@ def tax_money_values(payload: dict[str, object]) -> list[str]:
     values = [amount for group in groups if (amount := _group_amount(group))]
     refund = payload.get("refund_candidates")
     if isinstance(refund, dict):
-        amount = refund.get("amount")
+        amount = _refund_amount(refund)
         if isinstance(amount, dict) and amount.get("value") is not None:
             values.append(str(amount["value"]))
     return values
+
+
+def _refund_amount(refund: dict[str, object]) -> object:
+    return refund.get("total", refund.get("amount"))
+
+
+def _open_count(totals: dict[str, object], key: str) -> int:
+    """Open NHR, error, and unreviewed counts from the GET /totals shape."""
+    if key == "unreviewed":
+        unreviewed = totals["unreviewed"]
+        assert isinstance(unreviewed, dict)
+        return sum(int(row["count"]) for row in unreviewed["by_direction"])
+    block = totals[key]
+    assert isinstance(block, dict)
+    return int(block["count"])
 
 
 def ledger_copies_engine(stored: str, engine: str) -> bool:
@@ -387,7 +406,11 @@ def _wa_export(client: TestClient, key: str) -> str:
     assert created.status_code == 200, created.text
     body = created.json()
     assert body["status"] == "DRAFT"
-    exported = client.get(f"/api/v1/workpapers/{body['id']}/export")
+    exported = client.get(
+        f"/api/v1/workpapers/{body['id']}/export",
+        params={"format": "csv"},
+        headers=_headers(f"{key}-export"),
+    )
     assert exported.status_code == 200, exported.text
     return exported.text
 
@@ -648,10 +671,11 @@ def test_rg8_placeholder_has_no_filed_or_paid_when_web_is_absent() -> None:
     placeholder = (ROOT / "app" / "static" / "index.html").read_text(encoding="utf-8")
     assert "filed" not in placeholder.lower()
     assert "paid" not in placeholder.lower()
-    export_source = inspect.getsource(export_workpaper)
-    assert "def export_workpaper" in export_source
-    assert export_source.strip().endswith("return buffer.getvalue()")
-    assert len(export_source) == len(inspect.getsource(export_workpaper))
+    # export_workpaper delegates CSV and JSON bodies to these helpers.
+    parts = [inspect.getsource(fn) for fn in (export_workpaper, _document, _render_csv)]
+    export_source = "\n".join(parts)
+    assert "def export_workpaper" in parts[0]
+    assert parts[2].strip().endswith("return buffer.getvalue()")
     scanned = rg8_corpus(ROOT, export_source)
     assert placeholder in scanned
     assert export_source in scanned
@@ -675,8 +699,8 @@ def test_tax_or_engine_amount_on_a_hold_fails() -> None:
 def test_no_approved_liabilities_is_not_a_bare_zero(signed_client: TestClient) -> None:
     _run(signed_client, "case6", "gate-case6-message")
     totals = _totals(signed_client)
-    assert totals["approved_liabilities_message"] == "No approved liabilities"
-    assert totals["approved_liabilities"] == []
+    assert totals["approved_liabilities"]["message"] == "No approved liabilities"
+    assert totals["approved_liabilities"]["by_jurisdiction"] == []
     assert liability_total_violations(totals) == []
     assert "0.00" not in "No approved liabilities"
     clean = {
@@ -732,16 +756,18 @@ def test_held_purchase_amount_of_zero_is_not_tax(signed_client: TestClient) -> N
     totals = _totals(signed_client)
     assert totals["held"]["count"] == 1
     assert totals["held"]["purchase_amount"] == {"value": "0.00", "currency": "USD"}
-    assert totals["held"]["note"] == "purchase amount, not tax"
+    assert totals["held"]["label"] == "purchase amount, not tax"
     assert held_violations(totals["held"]) == []
     assert liability_total_violations(totals) == []
-    refused = signed_client.post(
+    draft = signed_client.post(
         "/api/v1/workpapers",
         json={"jurisdiction": "WA", "period": "2026Q4"},
         headers=_headers("gate-held-workpaper"),
     )
-    assert refused.status_code == 422
-    assert refused.json()["error"]["code"] == "NO_APPROVED_LIABILITY_LINES"
+    assert draft.status_code == 200, draft.text
+    assert draft.json()["approved_liabilities"] == []
+    assert draft.json()["approved_liabilities_message"] == "No approved liabilities"
+    assert "0.00" not in json.dumps(draft.json()["excluded"])
 
 
 @pytest.mark.parametrize("kind", _EXCLUSIONS, ids=lambda kind: kind.name)
@@ -792,11 +818,11 @@ def test_rg1_excludes_unit_from_totals_and_workpaper(
         assert totals["held"]["count"] == 1
         assert totals["held"]["purchase_amount"]["value"] == "0.00"
     elif kind.name == "nhr":
-        assert totals["needs_human_review_count"] >= 1
+        assert _open_count(totals, "open_needs_human_review") >= 1
     elif kind.name == "unreviewed":
-        assert totals["unreviewed_count"] >= 1
+        assert _open_count(totals, "unreviewed") >= 1
     elif kind.name == "error":
-        assert totals["error_count"] >= 1
+        assert _open_count(totals, "determination_errors") >= 1
     export = _wa_export(signed_client, f"gate-workpaper-{kind.name}")
     section = approved_liability_section(export)
     assert invoice in section
@@ -834,15 +860,17 @@ def test_superseded_approval_leaves_totals_and_workpaper(
     assert poll_once(signed_client.app.state.ctx) == 1
     totals = _totals(signed_client)
     assert anchor not in tax_money_values(totals)
-    assert totals["approved_liabilities_message"] == "No approved liabilities"
+    assert totals["approved_liabilities"]["message"] == "No approved liabilities"
     assert liability_total_violations(totals) == []
-    refused = signed_client.post(
+    draft = signed_client.post(
         "/api/v1/workpapers",
         json={"jurisdiction": "WA", "period": "2026Q4"},
         headers=_headers("gate-superseded-workpaper"),
     )
-    assert refused.status_code == 422
-    assert refused.json()["error"]["code"] == "NO_APPROVED_LIABILITY_LINES"
+    assert draft.status_code == 200, draft.text
+    assert draft.json()["approved_liabilities"] == []
+    assert draft.json()["approved_liabilities_message"] == "No approved liabilities"
+    assert "0.00" not in json.dumps(draft.json()["excluded"])
 
 
 def test_refund_candidate_never_reduces_a_liability_total(
@@ -857,7 +885,7 @@ def test_refund_candidate_never_reduces_a_liability_total(
     assert determination["direction"] == "REFUND_CANDIDATE"
     engine = determination["engine_amount"]["value"]
     unreviewed = _totals(signed_client)
-    assert unreviewed["unreviewed_count"] >= 1
+    assert _open_count(unreviewed, "unreviewed") >= 1
     assert engine not in tax_money_values(unreviewed)
     assert unreviewed["approved_liabilities"] == before["approved_liabilities"]
     approved = signed_client.post(
@@ -875,7 +903,7 @@ def test_refund_candidate_never_reduces_a_liability_total(
     assert after["approved_liabilities"] == before["approved_liabilities"]
     assert after["refund_candidates"]["count"] == 1
     assert after["refund_candidates"]["label"] == "not recovered cash"
-    assert after["refund_candidates"]["amount"]["value"] == engine
+    assert after["refund_candidates"]["total"]["value"] == engine
     assert claim_violations(json.dumps(after)) == []
     export = _wa_export(signed_client, "gate-refund-workpaper")
     section = approved_liability_section(export)
