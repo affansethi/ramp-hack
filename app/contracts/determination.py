@@ -71,3 +71,4 @@ class DeterminationRead(BaseModel):
     error_code: str | None
     engine_request: dict[str, Any] | None = None
     engine_response: dict[str, Any] | None = None
+    refund_letter_id: str | None = None

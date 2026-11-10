@@ -23,3 +23,18 @@ jobs:
 
       - name: Lint, type check and tests
         run: make check
+
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Release gates and replay eval
+        run: pytest tests/gates tests/eval

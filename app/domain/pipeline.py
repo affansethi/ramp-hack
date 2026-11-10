@@ -259,9 +259,9 @@ def ingest_fetched_record(
         )
     )
     if existing is not None:
-        if record["ocr_taxes"] is not None:
-            existing.ramp_ocr_taxes = record["ocr_taxes"]
-            _enqueue(session, job.org_id, existing.id)
+        # Amount and OCR feed the cross-check. A new value versions the purchase,
+        # supersedes the current result, and queues that check again.
+        _refresh_fetched_inputs(session, existing, amount, tax)
         event.purchase_id = job.purchase_id = existing.id
         return
     vendor = record["vendor"] or ""
@@ -271,8 +271,7 @@ def ingest_fetched_record(
         session, job.org_id, vendor, invoice_number, invoice_date, amount
     )
     if matched is not None:
-        event.purchase_id = job.purchase_id = matched.id
-        _stage_audit(session, job.org_id, "deduplicate", matched.id, 1)
+        _link_exact_invoice(session, matched, event, tax, job=job)
         return
     scenario = (
         get_scenario(inputs["demo_scenario"]) if inputs.get("demo_scenario") else None
@@ -323,6 +322,23 @@ def ingest_fetched_record(
     if result.purchase_id is not None:
         for other in ambiguous:
             _record_ambiguous(session, job.org_id, result.purchase_id, other.id)
+
+
+def _refresh_fetched_inputs(
+    session: Session, purchase: Purchase, amount: str, tax: str | None
+) -> None:
+    changed = False
+    if purchase.ramp_entity_amount != amount:
+        purchase.ramp_entity_amount = amount
+        changed = True
+    if purchase.ramp_ocr_taxes != tax:
+        purchase.ramp_ocr_taxes = tax
+        changed = True
+    if not changed:
+        return
+    purchase.facts_version += 1
+    _supersede_current(session, purchase)
+    _enqueue(session, purchase.org_id, purchase.id)
 
 
 def advance_purchase(session: Session, purchase_id: str, ruleset: Ruleset) -> None:
@@ -438,11 +454,9 @@ def _ingest(
         session, org_id, vendor, invoice_number, invoice_date, entity_amount
     )
     if matched is not None:
-        event.purchase_id = matched.id
         event.signature_result = signature_result
-        _stage_audit(session, org_id, "deduplicate", matched.id, 1)
-        job = _enqueue(session, org_id, matched.id)
-        return IngestResult(matched.id, job.id, True, event.id)
+        linked = _link_exact_invoice(session, matched, event, ocr_taxes, job=None)
+        return IngestResult(matched.id, linked.id, True, event.id)
     purchase = Purchase(
         id=str(uuid4()),
         org_id=org_id,
@@ -966,6 +980,51 @@ def _enqueue(session: Session, org_id: str, purchase_id: str) -> Job:
     return job
 
 
+def _link_exact_invoice(
+    session: Session,
+    purchase: Purchase,
+    event: SourceEvent,
+    ocr_taxes: str | None,
+    *,
+    job: Job | None,
+) -> Job:
+    """Keep both source events on one purchase and reconcile a new receipt tax."""
+    event.purchase_id = purchase.id
+    _note_ocr_evidence(session, purchase, ocr_taxes)
+    _stage_audit(
+        session,
+        purchase.org_id,
+        "deduplicate",
+        purchase.id,
+        purchase.facts_version,
+    )
+    # Queue before the fetch job stores purchase_id. A running fetch is not
+    # the advance that reruns cross-check.
+    queued = _enqueue(session, purchase.org_id, purchase.id)
+    if job is not None:
+        job.purchase_id = purchase.id
+    return queued
+
+
+def _note_ocr_evidence(
+    session: Session, purchase: Purchase, ocr_taxes: str | None
+) -> None:
+    """Store a changed OCR tax and drop results keyed by the previous version.
+
+    A missing tax line does not erase a tax already stored. Equal decimals keep
+    the original sourced string and the current approval.
+    """
+    if ocr_taxes is None:
+        return
+    stored = purchase.ramp_ocr_taxes
+    if stored is not None and parse_decimal(stored) == parse_decimal(ocr_taxes):
+        return
+    purchase.ramp_ocr_taxes = ocr_taxes
+    purchase.facts_version += 1
+    # Bump first so current rows, including approvals, no longer match.
+    _supersede_current(session, purchase)
+
+
 def _invoice_candidates(
     session: Session,
     org_id: str,
@@ -977,7 +1036,11 @@ def _invoice_candidates(
     if not vendor.strip() or not invoice_number.strip():
         return None, []
     rows = list(
-        session.scalars(select(Purchase).where(Purchase.org_id == org_id)).all()
+        session.scalars(
+            select(Purchase)
+            .where(Purchase.org_id == org_id)
+            .order_by(Purchase.created_at, Purchase.id)
+        ).all()
     )
     same = [
         row
@@ -989,11 +1052,34 @@ def _invoice_candidates(
     exact = [
         row
         for row in same
-        if row.invoice_date == invoice_date and _amount_equal(row, amount)
+        if _invoice_dates_match(row.invoice_date, invoice_date)
+        and _amount_equal(row, amount)
     ]
     matched = exact[0] if exact else None
     ambiguous = [row for row in same if matched is None or row.id != matched.id]
     return matched, ambiguous
+
+
+def _invoice_dates_match(stored: str, incoming: str) -> bool:
+    """Both sides need a real calendar date. Two blanks are not the same date."""
+    left = _present_invoice_date(stored)
+    right = _present_invoice_date(incoming)
+    if left is None or right is None:
+        return False
+    return left == right
+
+
+def _present_invoice_date(value: str) -> date | None:
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        parsed = date.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.isoformat() != text:
+        return None
+    return parsed
 
 
 def _amount_equal(purchase: Purchase, amount: str) -> bool:
@@ -1006,10 +1092,24 @@ def _amount_equal(purchase: Purchase, amount: str) -> bool:
 def _record_ambiguous(
     session: Session, org_id: str, left_id: str, right_id: str
 ) -> None:
-    left_command = f"ambiguous_invoice_match:{right_id}"
-    right_command = f"ambiguous_invoice_match:{left_id}"
-    _stage_audit(session, org_id, left_command, left_id, 1)
-    _stage_audit(session, org_id, right_command, right_id, 1)
+    left = session.get(Purchase, left_id)
+    right = session.get(Purchase, right_id)
+    if left is None or right is None:
+        return
+    _stage_audit(
+        session,
+        org_id,
+        f"ambiguous_invoice_match:{right.id}",
+        left.id,
+        left.facts_version,
+    )
+    _stage_audit(
+        session,
+        org_id,
+        f"ambiguous_invoice_match:{left.id}",
+        right.id,
+        right.facts_version,
+    )
 
 
 def _stage_audit(
@@ -1023,6 +1123,7 @@ def _stage_audit(
     found = session.scalar(
         select(AuditEvent).where(
             AuditEvent.org_id == org_id,
+            AuditEvent.object_type == "purchase",
             AuditEvent.object_id == object_id,
             AuditEvent.command == command,
             AuditEvent.object_version == version,
@@ -1030,20 +1131,10 @@ def _stage_audit(
     )
     if found is not None:
         return
-    session.add(
-        AuditEvent(
-            id=str(uuid4()),
-            org_id=org_id,
-            actor_id="system",
-            command=command[:80],
-            object_type=object_type,
-            object_id=object_id,
-            object_version=version,
-            before_hash="",
-            after_hash=_hash(f"{object_id}:{command}:{version}"),
-            created_at=utcnow(),
-        )
-    )
+    # Same writer as fact and review commands, so before_hash stays one chain.
+    from app.domain.commands import _audit
+
+    _audit(session, org_id, "system", command, "purchase", object_id, version)
 
 
 def _find_event(session: Session, org_id: str, event_id: str) -> SourceEvent | None:
