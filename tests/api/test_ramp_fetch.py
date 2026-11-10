@@ -264,8 +264,8 @@ def test_changed_ocr_supersedes_approval_and_rechecks(
     assert detail["holds"][0]["named_fact"] == "tax_charged"
     assert detail["determinations"] == []
     totals = signed_client.get("/api/v1/totals").json()
-    assert totals["approved_liabilities"] == []
-    assert totals["approved_liabilities_message"] == "No approved liabilities"
+    assert totals["approved_liabilities"]["by_jurisdiction"] == []
+    assert totals["approved_liabilities"]["message"] == "No approved liabilities"
     assert "151.92" not in json.dumps(totals["approved_liabilities"])
     with ctx.session_factory() as session:
         purchases = session.scalars(select(Purchase)).all()
@@ -320,11 +320,12 @@ def test_unchanged_later_event_keeps_the_approval(
     assert detail["facts_version"] == 1
     assert detail["queue"] == "decided"
     totals = signed_client.get("/api/v1/totals").json()
-    assert totals["approved_liabilities"] == [
+    assert totals["approved_liabilities"]["by_jurisdiction"] == [
         {
             "jurisdiction": "WA",
             "period": "2026Q4",
-            "amount": {"value": "151.92", "currency": "USD"},
+            "total": {"value": "151.92", "currency": "USD"},
+            "line_count": 1,
         }
     ]
 

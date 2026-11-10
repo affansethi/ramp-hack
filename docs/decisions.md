@@ -42,7 +42,9 @@ v2 drops the Azure OpenAI dependency: a provider interface with `openai` (target
 
 Engine amounts are copied byte-for-byte; the app never rounds, adjusts, recomputes or fills in. Consequence: `Decimal` in domain code, `{"value": "10.00", "currency": "USD"}` on the wire, NUMERIC/integer-cents in Postgres, and a schema ban (tested in CI) on float money columns and on any net/savings/recovered field — with the explicit carve-outs that sourced invoice line-net facts and the mandatory "not recovered cash" refund label are allowed.
 
-## D9 — Two-phase gating: skeleton first, owner-signed content second
+## D9 — Two-phase gating: skeleton first, verified content second
+
+**Amended 2026-11-10:** content activates through owner review **or** agent verification (`docs/content-verification.md`); owner sign-off is no longer required. AF reviewed the rules, rates, rounding basis and filing-basis text on 2026-11-09 (PRs #96, #98); agents audit those with evidence and verify the catalog and goldens. The two-phase gating itself is unchanged.
 
 The S3 catalog, rule entries, rates and golden expected results are owner-authored (RJ drafts, AF signs); agents build structures and evaluators only. To keep parallel work unblocked, signing gates only the dependent stages: skeleton/contracts, extractor scaffolding, the engine evaluator, the simulator and mock UI can all land before sign-off; fact admission, hold checks, end-to-end supported acceptance and the case goldens wait. Consequence: the build order in `docs/architecture.md` §7 follows v2 §15 exactly, and "agents never record expected results" is enforced as a repo rule in `AGENTS.md`.
 
