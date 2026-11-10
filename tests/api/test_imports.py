@@ -224,6 +224,31 @@ def test_url_field_is_rejected_with_no_side_effects(
     }
 
 
+def test_empty_url_field_is_treated_as_absent(
+    iclient: tuple[TestClient, FakeStore],
+) -> None:
+    client, _ = iclient
+    response = _post(client, "import-empty-url", form={"url": ""})
+    assert response.status_code == 202, response.text
+    assert isinstance(response.json()["import_id"], str)
+    assert _counts(client)["documents"] == 1
+
+
+def test_same_key_with_and_without_url_conflicts(
+    iclient: tuple[TestClient, FakeStore],
+) -> None:
+    client, _ = iclient
+    first = _post(client, "import-url-clash")
+    assert first.status_code == 202, first.text
+    retry = _post(
+        client, "import-url-clash", form={"url": "https://example.invalid/i.pdf"}
+    )
+    assert retry.status_code == 409, retry.text
+    assert retry.json()["error"]["code"] == "IDEMPOTENCY_CONFLICT"
+    assert _counts(client)["documents"] == 1
+    assert _counts(client)["jobs"] == 1
+
+
 def test_oversize_body_is_413_with_no_side_effects(
     iclient: tuple[TestClient, FakeStore],
 ) -> None:

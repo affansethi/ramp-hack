@@ -443,8 +443,8 @@ async def imports(
 ) -> JSONResponse:
     """Store one synthetic file and enqueue a kind=import job.
 
-    The advance poller never runs this kind; #49 processes it. Nothing here
-    parses the file, calls the model, or creates a purchase or determination.
+    Enqueued with kind=import for #49 to process. Nothing here parses
+    the file, calls the model, or creates a purchase or determination.
     """
     viewer = _viewer(request, session)
     entity = session.get(Organization, entity_id)
@@ -453,12 +453,14 @@ async def imports(
     data = await file.read()
     digest = hashlib.sha256(data).hexdigest()
     declared = (file.content_type or "").split(";")[0].strip().lower()
+    normalized_url = url or None
     canonical = json.dumps(
         {
             "entity_id": entity_id,
             "sha256": digest,
             "mime_type": declared,
             "filename": file.filename,
+            "url": normalized_url,
         }
     )
     key = _key(request)
@@ -466,7 +468,7 @@ async def imports(
     if stored is not None:
         status = stored_status(session, viewer.org_id, key or "")
         return JSONResponse(stored, status_code=status)
-    if url is not None:
+    if normalized_url is not None:
         raise DomainError(
             "URL_NOT_ALLOWED",
             "URL ingestion is not accepted; upload the file.",
