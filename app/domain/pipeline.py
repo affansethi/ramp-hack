@@ -233,9 +233,7 @@ def ingest_webhook(
     return IngestResult(None, event.id, False, event.id)
 
 
-def ingest_fetched_record(
-    session: Session, job: Job, record: dict[str, Any]
-) -> None:
+def ingest_fetched_record(session: Session, job: Job, record: dict[str, Any]) -> None:
     event = session.get(SourceEvent, job.id)
     if event is None:
         raise ValueError("missing source event")

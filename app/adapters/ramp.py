@@ -74,9 +74,13 @@ class RampSimulator:
             for rid in receipt_ids
             for line in self.receipts.get(rid, {}).get("ocr", {}).get("line_items", [])
         ]
-        mismatch = bool(merchant) and bool(holder.get("location_name")) and (
-            str(merchant.get("state") or "")
-            != str(holder.get("location_name") or "").split(",")[-1].strip()
+        mismatch = (
+            bool(merchant)
+            and bool(holder.get("location_name"))
+            and (
+                str(merchant.get("state") or "")
+                != str(holder.get("location_name") or "").split(",")[-1].strip()
+            )
         )
         return dict(
             entity_amount=record["entity_amount"],
