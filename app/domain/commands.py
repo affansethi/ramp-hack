@@ -10,6 +10,7 @@ from typing import NamedTuple
 from uuid import uuid4
 
 from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.clock import utcnow
@@ -610,6 +611,7 @@ def _approve_liability(
             status="DRAFT",
         )
     )
+    _output_stage(session, purchase, determination, "outputs:liability")
 
 
 def _approve_refund(
@@ -648,6 +650,23 @@ def _approve_refund(
             basis_text="",
             status="DRAFT",
         )
+    )
+    _output_stage(session, purchase, determination, "outputs:refund_candidate")
+
+
+def _output_stage(
+    session: Session, purchase: Purchase, determination: Determination, command: str
+) -> None:
+    """Outputs stage (Tech Spec v2 §4): drafts created for this approved version."""
+    _audit(
+        session,
+        purchase.org_id,
+        "system",
+        command,
+        "determination",
+        determination.id,
+        determination.version,
+        dedupe=True,
     )
 
 
@@ -1190,7 +1209,14 @@ def _audit(
     object_type: str,
     object_id: str,
     version: int,
+    *,
+    dedupe: bool = False,
 ) -> None:
+    """Append one audit row to the object's hash chain.
+
+    ``dedupe`` is for pipeline stages: under the same lock, an existing row for
+    this object, command and input version means a retry, so nothing is written.
+    """
     # Lock before looking up history, including when no first row exists yet.
     # Database transaction locks survive this helper until commit or rollback.
     with session.no_autoflush:
@@ -1211,6 +1237,10 @@ def _audit(
             )
     # Flush pending command events too, so multiple writes in one transaction chain.
     session.flush()
+    if dedupe and _stage_written(
+        session, org_id, actor_id, command, object_type, object_id, version
+    ):
+        return
     previous = session.scalar(
         select(AuditEvent)
         .where(
@@ -1243,22 +1273,50 @@ def _audit(
             else timedelta(seconds=1)
         )
         created_at = max(created_at, previous_time + step)
-    session.add(
-        AuditEvent(
-            id=str(uuid4()),
-            org_id=org_id,
-            actor_id=actor_id,
-            command=command,
-            object_type=object_type,
-            object_id=object_id,
-            object_version=version,
-            before_hash=(previous.after_hash or "") if previous is not None else "",
-            after_hash=sha256(identity.encode("utf-8")).hexdigest(),
-            created_at=created_at.isoformat(timespec="microseconds").replace(
-                "+00:00", "Z"
-            ),
+    row = AuditEvent(
+        id=str(uuid4()),
+        org_id=org_id,
+        actor_id=actor_id,
+        command=command,
+        object_type=object_type,
+        object_id=object_id,
+        object_version=version,
+        before_hash=(previous.after_hash or "") if previous is not None else "",
+        after_hash=sha256(identity.encode("utf-8")).hexdigest(),
+        created_at=created_at.isoformat(timespec="microseconds").replace("+00:00", "Z"),
+    )
+    if not dedupe:
+        session.add(row)
+        return
+    try:
+        with session.begin_nested():
+            session.add(row)
+            session.flush()
+    except IntegrityError:
+        # Another writer recorded this stage for the same input version.
+        return
+
+
+def _stage_written(
+    session: Session,
+    org_id: str,
+    actor_id: str,
+    command: str,
+    object_type: str,
+    object_id: str,
+    version: int,
+) -> bool:
+    found = session.scalar(
+        select(AuditEvent.id).where(
+            AuditEvent.org_id == org_id,
+            AuditEvent.actor_id == actor_id,
+            AuditEvent.object_type == object_type,
+            AuditEvent.object_id == object_id,
+            AuditEvent.command == command,
+            AuditEvent.object_version == version,
         )
     )
+    return found is not None
 
 
 def _supersede_all_current(session: Session, purchase: Purchase) -> None:

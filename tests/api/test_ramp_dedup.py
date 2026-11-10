@@ -254,8 +254,9 @@ def test_later_bill_ocr_supersedes_an_approved_card(
         "/api/v1/audit-events", params={"object_id": purchase_id}
     ).json()["audit_events"]
     dedup = [event for event in events if event["command"] == "deduplicate"]
-    assert len(dedup) == 1
-    assert dedup[0]["object_version"] == 2
+    # Version 1: the new canonical purchase. Version 2: the merged bill.
+    assert [event["object_version"] for event in dedup] == [1, 2]
+    dedup = dedup[1:]
     assert dedup[0]["after_hash"] == _after_hash(dedup[0])
     _send(client, "evt-bill-ocr", "bills.created", "bill-ocr")
     with client.app.state.ctx.session_factory() as session:
@@ -475,3 +476,35 @@ def _assert_receipt_invalidated(
         purchase = session.get(Purchase, purchase_id)
         assert purchase is not None
         assert purchase.ramp_ocr_taxes == "1.00"
+
+
+def test_duplicate_lookup_does_not_treat_underscores_as_wildcards(
+    signed_client: TestClient,  # noqa: F811
+) -> None:
+    from uuid import uuid4
+
+    from app.clock import utcnow
+    from app.models import AuditEvent
+
+    created = _run(signed_client, "case1", "like-case1")
+    purchase_id = created["purchase_id"]
+    with signed_client.app.state.ctx.session_factory() as session:
+        purchase = session.get(Purchase, purchase_id)
+        assert purchase is not None
+        session.add(
+            AuditEvent(
+                id=str(uuid4()),
+                org_id=purchase.org_id,
+                actor_id="system",
+                command="ambiguousXinvoiceXmatch:not-a-purchase",
+                object_type="purchase",
+                object_id=purchase_id,
+                object_version=purchase.facts_version,
+                before_hash="",
+                after_hash="lookalike",
+                created_at=utcnow(),
+            )
+        )
+        session.commit()
+    detail = signed_client.get(f"/api/v1/purchases/{purchase_id}").json()
+    assert detail["possible_duplicate_ids"] == []
