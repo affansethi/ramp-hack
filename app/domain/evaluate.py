@@ -46,6 +46,7 @@ class EngineLineResult:
     rule_reference: str | None
     rate: str | None
     location_code: str | None
+    rule_source_url: str | None
 
 
 def quarter_key(day: date) -> str:
@@ -103,6 +104,7 @@ def evaluate_line(ruleset: Ruleset, request: EngineLineRequest) -> EngineLineRes
         rule_reference=rule.id,
         rate=rate_row.rate,
         location_code=rate_row.location_code,
+        rule_source_url=rule.primary_source_url,
     )
 
 
@@ -195,6 +197,7 @@ def _unsupported(reason: str) -> EngineLineResult:
         rule_reference=None,
         rate=None,
         location_code=None,
+        rule_source_url=None,
     )
 
 
@@ -211,4 +214,5 @@ def _error(code: str) -> EngineLineResult:
         rule_reference=None,
         rate=None,
         location_code=None,
+        rule_source_url=None,
     )
