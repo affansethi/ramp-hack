@@ -25,17 +25,26 @@ def make_session_factory(engine: Engine) -> sessionmaker[Session]:
 
 def init_database(url: str) -> sessionmaker[Session]:
     from app import models  # noqa: F401  (register tables)
-    from app.migrations import upgrade_audit_hashes, upgrade_fetch_input
     from app.seed import seed
 
     engine = make_engine(url)
-    Base.metadata.create_all(engine)
-    upgrade_audit_hashes(engine)
-    upgrade_fetch_input(engine)
+    if url.startswith("postgresql"):
+        _alembic_upgrade(url)
+    else:
+        Base.metadata.create_all(engine)
     factory = make_session_factory(engine)
     with session_scope(factory) as session:
         seed(session)
     return factory
+
+
+def _alembic_upgrade(url: str) -> None:
+    from alembic import command
+    from alembic.config import Config
+
+    config = Config("alembic.ini")
+    config.set_main_option("sqlalchemy.url", url)
+    command.upgrade(config, "head")
 
 
 def database_ok(factory: sessionmaker[Session]) -> bool:

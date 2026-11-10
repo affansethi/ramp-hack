@@ -226,55 +226,19 @@ def test_audit_route_rejects_mutations(tmp_path: Path) -> None:
         assert client.get("/api/v1/audit-events").json()["audit_events"] == []
 
 
-def test_startup_upgrades_existing_audit_table(tmp_path: Path) -> None:
-    from sqlalchemy import inspect, text
+def test_sqlite_create_all_includes_audit_hash_columns(tmp_path: Path) -> None:
+    from sqlalchemy import inspect
 
-    from app.db import make_engine
-
-    database = make_engine(f"sqlite:///{tmp_path / 'contracts.db'}")
-    with database.begin() as connection:
-        connection.execute(
-            text(
-                "CREATE TABLE audit_events (id VARCHAR(36) PRIMARY KEY, "
-                "org_id VARCHAR(36), actor_id VARCHAR(36), command VARCHAR(80), "
-                "object_type VARCHAR(80), object_id VARCHAR(36), "
-                "object_version INTEGER, created_at VARCHAR(32))"
-            )
-        )
-        connection.execute(
-            text(
-                "INSERT INTO audit_events VALUES "
-                "('legacy', :org, :actor, 'legacy', 'purchase', 'object', 1, "
-                "'2026-01-01T00:00:00Z')"
-            ),
-            {"org": ORG_ID, "actor": PERSON_ID},
-        )
-    database.dispose()
     with _client(tmp_path) as client:
         _login(client)
-        rows = client.get("/api/v1/audit-events").json()["audit_events"]
-        assert len(rows) == 1
-        assert rows[0]["before_hash"] is None
-        assert rows[0]["after_hash"] is None
         factory = client.app.state.ctx.session_factory
         with factory() as session:
             columns = {
-                column["name"]: column
+                column["name"]
                 for column in inspect(session.get_bind()).get_columns("audit_events")
             }
-            assert columns["before_hash"]["nullable"]
-            assert columns["after_hash"]["nullable"]
-            _audit(session, ORG_ID, PERSON_ID, "test", "purchase", "object", 2)
-            session.commit()
-        # Running the upgrade again is harmless and preserves the new history.
-        from app.migrations import upgrade_audit_hashes
-
-        upgrade_audit_hashes(factory.kw["bind"])
-        rows = client.get("/api/v1/audit-events").json()["audit_events"]
-        assert len(rows) == 2
-        assert rows[0]["after_hash"] is None
-        assert rows[1]["before_hash"] == ""
-        assert rows[1]["after_hash"]
+        assert "before_hash" in columns
+        assert "after_hash" in columns
 
 
 def test_concurrent_first_referrals_chain_through_commit(
