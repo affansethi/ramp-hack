@@ -1,9 +1,11 @@
 # rules/
 
-Owner-authored YAML: rule entries (`effective_from/to`, `timing_basis`,
-`primary_source_url`, `review_status`, `reviewed_by/at`), the S3
-required-fact catalog, and rate tables.
+Verified content YAML: rule entries (`effective_from/to`, `timing_basis`,
+`primary_source_url`, `review_status`), the S3 required-fact catalog, rate
+tables, and (later) filing-basis text.
 
-Agents implement the evaluator only. Agents never author rule entries,
-rates, or the catalog's substance: RJ drafts, AF signs. Only `reviewed`
-entries activate; `PLACEHOLDER:` entries stay inactive and route NHR.
+Values change only under `docs/content-verification.md`: official primary
+sources, an evidence file under `rules/evidence/`, a research pass and a
+blind verification pass by a different lane and model family, and the
+`make verify-content` gate. Only verified entries activate; `candidate` and
+`PLACEHOLDER:` entries stay inactive and route NHR. No owner signs.
