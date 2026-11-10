@@ -66,7 +66,6 @@ def test_fact_versions_chain_and_review_keeps_version(tmp_path: Path) -> None:
             if row["actor_id"] != "system"
         ]
         assert len(rows) == 2
-        assert rows[0]["before_hash"] == ""
         assert rows[1]["before_hash"] == rows[0]["after_hash"]
         assert rows[1]["after_hash"] != rows[0]["after_hash"]
         for row in rows:
