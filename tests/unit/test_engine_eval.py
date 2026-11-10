@@ -73,6 +73,7 @@ def test_shipped_rules_are_inactive() -> None:
 def test_inactive_rules_emit_no_amount() -> None:
     result = evaluate_line(load_ruleset(Path("rules")), _wa_request())
     assert result.outcome == "unsupported"
+    assert result.rule_source_url is None
     assert result.expected_tax is None
     assert result.adjustment_amount is None
     assert result.direction is None
@@ -85,6 +86,7 @@ def test_reviewed_rule_copies_a_decimal_string() -> None:
     assert result.adjustment_amount == "151.92"
     assert result.direction == "LIABILITY"
     assert result.rule_reference == "WA-RAS-001"
+    assert result.rule_source_url == "https://example.test/wa"
     assert result.rate == "0.1055"
     assert result.location_code == "1726"
     assert isinstance(result.expected_tax, str)
@@ -109,6 +111,7 @@ def test_january_2027_transition_is_nhr_with_no_amount() -> None:
         ),
     )
     assert result.nhr_reason == "RULE_TRANSITION_UNRESOLVED"
+    assert result.rule_source_url is None
     assert result.adjustment_amount is None
     assert result.expected_tax is None
 
@@ -118,6 +121,7 @@ def _no_amount(result: EngineLineResult) -> None:
     assert result.adjustment_amount is None
     assert result.direction is None
     assert result.nhr_reason is None
+    assert result.rule_source_url is None
 
 
 def test_emit_cents_keeps_exact_cents_and_refuses_to_round() -> None:
@@ -230,6 +234,7 @@ def test_multi_state_net_is_unsupported_with_no_amount() -> None:
     result = evaluate_line(ruleset, _wa_request(state_count=2))
     assert result.outcome == "unsupported"
     assert result.nhr_reason == "ENGINE_UNSUPPORTED"
+    assert result.rule_source_url is None
     assert result.expected_tax is None
     assert result.adjustment_amount is None
     assert result.direction is None
@@ -261,5 +266,6 @@ def test_reviewed_placeholder_never_activates() -> None:
     )
     assert result.outcome == "unsupported"
     assert result.nhr_reason == "RULE_TRANSITION_UNRESOLVED"
+    assert result.rule_source_url is None
     assert result.expected_tax is None
     assert result.adjustment_amount is None
