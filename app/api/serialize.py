@@ -1,11 +1,14 @@
 """Read models. Amounts are copied engine strings, or null when there is no result."""
 
 import json
+from typing import Any, cast
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import Settings
+from app.contracts.determination import DeterminationRead
+from app.contracts.money import Money
 from app.domain.moneyutil import money_json, parse_decimal
 from app.models import Determination, Fact, Hold, Purchase, PurchaseLine, Question
 
@@ -183,38 +186,53 @@ def stop_reason(holds: list[Hold], determinations: list[Determination]) -> str:
     return "Waiting for the worker."
 
 
+def _supported_text(supported: bool, value: str | None) -> str | None:
+    if not supported:
+        return None
+    return value
+
+
+def _supported_money(supported: bool, value: str | None) -> Money | None:
+    if not supported or not value:
+        return None
+    return Money.model_validate({"value": value, "currency": "USD"})
+
+
+def _stored_object(raw: str | None) -> dict[str, Any] | None:
+    """Parse a stored engine-trail JSON object. Null when the row has none."""
+    if not raw:
+        return None
+    loaded: Any = json.loads(raw)
+    if not isinstance(loaded, dict):
+        raise TypeError("engine trail must be a JSON object")
+    return {str(key): value for key, value in loaded.items()}
+
+
 def _determination_json(row: Determination) -> dict[str, object]:
     supported = row.label == "ENGINE_SUPPORTED"
-    return {
-        "id": row.id,
-        "line_id": row.line_id,
-        "jurisdiction": row.jurisdiction,
-        "facts_version": row.facts_version,
-        "ruleset_version": row.ruleset_version,
-        "label": row.label,
-        "nhr_reason": row.nhr_reason,
-        "direction": row.direction if supported else None,
-        "derived_direction": row.derived_direction if supported else False,
-        "rate": row.rate if supported else None,
-        "location_code": row.location_code if supported else None,
-        "expected_tax": money_json(row.expected_tax)
-        if supported and row.expected_tax
-        else None,
-        "engine_amount": money_json(row.engine_amount)
-        if supported and row.engine_amount
-        else None,
-        "rule_reference": row.rule_reference if supported else None,
-        "engine_treatment": row.engine_treatment if supported else None,
-        "unit_status": row.unit_status,
-        "version": row.version,
-        "error_code": row.error_code,
-        "engine_request": json.loads(row.engine_request)
-        if row.engine_request
-        else None,
-        "engine_response": json.loads(row.engine_response)
-        if row.engine_response
-        else None,
-    }
+    body = DeterminationRead(
+        id=row.id,
+        line_id=row.line_id,
+        jurisdiction=row.jurisdiction,
+        facts_version=row.facts_version,
+        ruleset_version=row.ruleset_version,
+        label=row.label,
+        nhr_reason=row.nhr_reason,
+        direction=_supported_text(supported, row.direction),
+        derived_direction=row.derived_direction if supported else False,
+        rate=_supported_text(supported, row.rate),
+        location_code=_supported_text(supported, row.location_code),
+        expected_tax=_supported_money(supported, row.expected_tax),
+        engine_amount=_supported_money(supported, row.engine_amount),
+        rule_reference=_supported_text(supported, row.rule_reference),
+        engine_treatment=_supported_text(supported, row.engine_treatment),
+        unit_status=row.unit_status,
+        version=row.version,
+        error_code=row.error_code,
+        engine_request=_stored_object(row.engine_request),
+        engine_response=_stored_object(row.engine_response),
+    )
+    return cast(dict[str, object], body.model_dump(mode="json"))
 
 
 def _actions(queue: str) -> list[str]:

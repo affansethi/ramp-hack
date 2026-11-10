@@ -83,7 +83,7 @@ def _write(
         vendor="Synthetic Cloud Co",
         invoice_number=f"SYN-{uuid4().hex[:8]}",
         invoice_date="2026-11-15",
-        entity_name="Synthetic Northwind",
+        entity_name="Acme Startup LLC",
         currency="USD",
         item_status="OPEN",
         category="REMOTE_ACCESS_SAAS",

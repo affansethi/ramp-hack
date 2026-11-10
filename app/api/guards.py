@@ -11,6 +11,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from app.contracts.errors import ErrorBody, ErrorResponse
 from app.domain.errors import DomainError
 from app.models import DemoSession
 
@@ -26,18 +27,17 @@ def new_csrf_token() -> str:
 
 
 def domain_error_response(exc: DomainError) -> JSONResponse:
-    return JSONResponse(
-        status_code=exc.status,
-        content={
-            "error": {
-                "code": exc.code,
-                "message": exc.message,
-                "field_errors": exc.field_errors,
-                "retryable": exc.retryable,
-                "correlation_id": uuid4().hex,
-            }
-        },
+    """Same envelope for the exception handler and the mutation guard."""
+    payload = ErrorResponse(
+        error=ErrorBody(
+            code=exc.code,
+            message=exc.message,
+            field_errors=exc.field_errors,
+            retryable=exc.retryable,
+            correlation_id=uuid4().hex,
+        )
     )
+    return JSONResponse(status_code=exc.status, content=payload.model_dump(mode="json"))
 
 
 def enforce_mutation_guards(request: Request) -> None:
