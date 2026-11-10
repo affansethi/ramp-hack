@@ -13,7 +13,7 @@ Authoritative inputs: the reconciled Design Spec (product rules) and Technical S
 | Database | Managed PostgreSQL Flexible Server (hosted), SQLAlchemy + Alembic; SQLite optional local-only | SQLite never hosts shared state; App Service `/home` is network storage and SQLite WAL is unsupported there |
 | Documents | Existing Azure Blob account `ramphackaffanandrj26`, container `data`, managed identity | SHA-256 document identity; frozen exports |
 | Model | Direct provider API behind `DocumentExtractor` (`openai`, `anthropic`, `google`, `replay`); target `gpt-4.1` with strict JSON schema, pinned and verified before live use | `LLM_MODE=replay` on stage and in CI; no Azure OpenAI dependency |
-| Engine | In-process `TaxEngine` over owner-authored `rules/*.yaml` + rate tables; WA DOR rate lookup cached per address/quarter | The only source of treatment, tax-decision amounts and direction |
+| Engine | In-process `TaxEngine` over `rules/*.yaml` + rate tables verified under `docs/content-verification.md`; WA DOR rate lookup cached per address/quarter | The only source of treatment, tax-decision amounts and direction |
 | Hosting | One Linux App Service in `data-rg`, West US 2; F1 while building, B1 with Always On for the demo | Startup: `gunicorn -w 1 -k uvicorn.workers.UvicornWorker app.main:app` |
 | CI/CD | One GitHub Actions workflow (`.github/workflows/deploy.yml`): lint, unit/rule tests, never-fail gates, replay eval; deploy to App Service on `main` via OIDC (`azure/webapps-deploy@v3`) | GitHub holds no Azure secret |
 
@@ -31,7 +31,7 @@ Startup mode guards: the app refuses to start unless `DATA_MODE=synthetic` and `
 | `app/worker/` | Job poller: atomic claim, `lease_until`, retry limits, expired-lease recovery, transactional result write + completion | Never approves anything; survives restart without duplicate effects |
 | `app/adapters/storage.py` | Blob reads/writes via `DefaultAzureCredential` (ported from the existing `data.py`) | No account keys |
 | `app/adapters/extractor.py` | `DocumentExtractor`: Call A (extraction) and Call B (category + question drafts); providers `openai`/`anthropic`/`google`/`replay`; cache keyed by document hash + provider + model + prompt + schema version | Two bounded calls per document; 45 s timeout, two retries, then human fact entry; values exactly as printed, nulls for missing; "no tax line" ≠ "tax line of 0.00" |
-| `app/adapters/engine.py` | `TaxEngine`: one request per line × jurisdiction; effective-date rule selection from `rules/`; returns SUPPORTED (treatment, expected tax, adjustment amount, optional direction, rule reference, rate, location code), UNSUPPORTED (no amount) or ERROR | Coverage only what reviewed `rules/` entries state; never emits an amount without a reviewed rule/rate reference; placeholder/unreviewed entries route NHR |
+| `app/adapters/engine.py` | `TaxEngine`: one request per line × jurisdiction; effective-date rule selection from `rules/`; returns SUPPORTED (treatment, expected tax, adjustment amount, optional direction, rule reference, rate, location code), UNSUPPORTED (no amount) or ERROR | Coverage only what verified `rules/` entries state; never emits an amount without a verified rule/rate reference; placeholder/candidate entries route NHR |
 | `app/adapters/ramp.py` | Ramp-shaped simulator now, sandbox later via `RAMP_API_BASE`; HMAC-SHA256 verification of `X-Ramp-Signature`; event dedup; fetch transaction/receipt records | Webhook intake stores the event and returns 200; all work happens in the worker |
 | `rules/` | Verified-content YAML: rule entries (`effective_from/to`, `timing_basis`, `primary_source_url`, `review_status`), the S3 required-fact catalog, rate tables | Agents implement the evaluator only; agents never author entries, rates or expected results. Only `verified` entries activate; `PLACEHOLDER:` entries stay inactive and route NHR |
 | `fixtures/` | Synthetic documents, verified expected results, model recordings | Synthetic only; agents never record expected results |
@@ -94,7 +94,7 @@ app/
   contracts/         Pydantic models + golden examples
   static/            built frontend (copied from web/ build output)
 web/                 frontend source (React)
-rules/               rule entries (yaml), S3 catalog, rate tables (owner-authored)
+rules/               rule entries (yaml), S3 catalog, rate tables (verified content under docs/content-verification.md)
 fixtures/            synthetic documents, expected results, recordings
 tests/               unit/, rules/, gates/, api/, eval/
 scripts/             az setup, seed, demo reset
@@ -106,10 +106,10 @@ docs/                specs, architecture, decisions
 
 - **Unit tests** (`tests/unit`): domain stages, fact admission (bill-to never confirms; silent ≠ zero; partial seat coverage holds), dedup, supersession.
 - **Rule tests** (`tests/rules`): evaluator against synthetic unit fixtures — liability, refund candidate, no adjustment, UNSUPPORTED/NHR, effective-date selection (Dec 2026 CA selects its verified rule; Jan 2027 routes NHR `RULE_TRANSITION_UNRESOLVED`), two-decimal USD string output.
-- **Gate tests** (`tests/gates`, never-fail, block merge): RG-1 no held/NHR/unreviewed/error unit in any total and held never shown as zero; RG-2 no net/savings/recovered field or copy; RG-3 engine amounts copied exactly (decimal string comparison, no float on money paths); RG-4 every SUPPORTED result has a real reviewed applicable rule/rate reference, placeholders never support approval; RG-5 demo cases 1–7 against the API; RG-6 every citation resolves to an admitted source and every active rule to a reviewed primary-source URL; RG-7 no duplicate effects (duplicate webhook, card + bill, duplicate mark-ready, worker restart with unfinished job); RG-8 no "filed"/"paid" without "simulated"; RG-9 effective dating; H1/H5 enum and endpoint-refusal tests.
+- **Gate tests** (`tests/gates`, never-fail, block merge): RG-1 no held/NHR/unreviewed/error unit in any total and held never shown as zero; RG-2 no net/savings/recovered field or copy; RG-3 engine amounts copied exactly (decimal string comparison, no float on money paths); RG-4 every SUPPORTED result has a real verified applicable rule/rate reference, placeholders never support approval; RG-5 demo cases 1–7 against the API; RG-6 every citation resolves to an admitted source and every active rule to a verified primary-source URL; RG-7 no duplicate effects (duplicate webhook, card + bill, duplicate mark-ready, worker restart with unfinished job); RG-8 no "filed"/"paid" without "simulated"; RG-9 effective dating; H1/H5 enum and endpoint-refusal tests.
 - **API tests** (`tests/api`): cross-org denial, stale-version refusal, idempotency-key behavior.
 - **Eval** (`tests/eval`): replay-mode extraction against golden fixtures; model output never contains rate, tax-decision amount, treatment, label, direction or verdict.
-- **Fixtures:** 20–30 synthetic goldens with verified expected results (derived independently by two agents on different lanes and model families). Agents never record expected results.
+- **Fixtures:** 20–30 synthetic goldens with verified expected results (derived by hand independently by research and verification agents on different lanes and model families under `docs/content-verification.md`). Implementation agents never record expected results by running the app or the engine.
 - **CI:** one workflow; required checks `test` and `gates`; deploy to App Service only on `main` via OIDC.
 
 ## 7 What to build first

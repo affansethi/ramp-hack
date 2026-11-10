@@ -35,7 +35,7 @@ The hard part is usually the facts, not the arithmetic. Invoices do not say wher
 - Remote-access SaaS plus one NY tangible-hardware fixture; no mixed-invoice splitting.  
 - Declared jurisdictions fixed to CA, WA and NY; reviewed fixture coverage is category-specific.  
 - AI fact extraction with source links; targeted missing-fact questions shown in-app to a simulated recipient.  
-- Deterministic results from owner-reviewed, effective-dated CA/WA SaaS and NY hardware rules and rates. Unreviewed rules, transitions and unsupported cases route NHR; placeholder fixtures are visibly illustrative, never validated legal determinations.  
+- Deterministic results from effective-dated CA/WA SaaS and NY hardware rules and rates verified under `docs/content-verification.md`. Unverified rules, transitions and unsupported cases route NHR; placeholder fixtures are visibly illustrative, never validated legal determinations.  
 - Holds, human review, approval, separate liability and refund-candidate totals.  
 - One WA Q4 2026 workpaper: 2026-10-01 to 2026-12-31, period assigned by invoice date; DRAFT → READY\_TO\_FILE\_SIMULATED, frozen version.  
 - **Simulated** filing lifecycle only.  
@@ -60,8 +60,8 @@ The hard part is usually the facts, not the arithmetic. Invoices do not say wher
 
 1. **Intake. A Ramp-shaped synthetic webhook/simulator supplies purchase data and is deduplicated. Flag → review → approve → totals; neither webhook ingestion nor flagging contributes to approved totals.**  
 2. **Extract and ground. AI proposes source-linked facts, including invoice amounts, never tax-decision amounts or treatment. Admitted sources include document/terms/seat-export spans, recorded named answers and the confirmed location ladder in Section 4\. Recorded extraction is visibly labeled replay.**  
-3. **Classify. AI proposes remote-access SaaS or tangible hardware; the signed category-specific catalog selects required facts. This is not a taxability call.**  
-4. **Fact check. Compare admitted facts against the signed category-specific catalog. Missing/unconfirmed required facts hold. Unsupported category, state outside CA/WA/NY, unreviewed rule/rate or unresolved transition routes NHR. Otherwise call the engine; no approval or totals until named human review.**  
+3. **Classify. AI proposes remote-access SaaS or tangible hardware; the verified category-specific catalog selects required facts. This is not a taxability call.**  
+4. **Fact check. Compare admitted facts against the verified category-specific catalog. Missing/unconfirmed required facts hold. Unsupported category, state outside CA/WA/NY, unverified rule/rate or unresolved transition routes NHR. Otherwise call the engine; no approval or totals until named human review.**  
 5. **Hold and ask.** The missing fact is named in plain language and one question goes to the spend owner. The item stays out of approval and totals. When a sourced answer arrives, the full fact check re-runs.  
 6. **Determine.** The engine is called once per line per jurisdiction. It returns a treatment, amount, and rule reference, or reports the case unsupported.  
 7. **Label and route.** Each result gets one of two labels and, if engine-supported, one direction: liability, refund candidate, or no adjustment.
@@ -100,7 +100,7 @@ Rules that apply to every fact:
 
 - **Tax charged \= zero** reaches the engine only when a sourced fact shows zero. A silent invoice holds the item.  
 - **User location** is confirmed only when the state split covers the full seat count. Partial coverage or conflicting sources leave it unconfirmed.  
-- Location ladder is ordered evidence, not automatic admission: keep source, rung, confidence, confirmed and confirmed\_by. SSO/HRIS must be business-location data; low confidence requires confirmation. Order-form ship-to or matched office address requires a named single-office confirmation. Bill-to never establishes use; conflicts/partial seat coverage hold. NY hardware instead requires confirmed delivery/ship-to evidence; include sourced shipping amount (explicit zero allowed) for the signed rule's taxable base.  
+- Location ladder is ordered evidence, not automatic admission: keep source, rung, confidence, confirmed and confirmed\_by. SSO/HRIS must be business-location data; low confidence requires confirmation. Order-form ship-to or matched office address requires a named single-office confirmation. Bill-to never establishes use; conflicts/partial seat coverage hold. NY hardware instead requires confirmed delivery/ship-to evidence; include sourced shipping amount (explicit zero allowed) for the verified rule's taxable base.  
 - AI confidence is shown but never alone admits a fact or releases a hold; low-confidence location proposals require explicit recorded confirmation under the catalog.
 
 ### 4.2 What is shown vs blocked
@@ -168,7 +168,7 @@ Synthetic fixtures, not legal advice. Engine outputs must match verified, effect
 
 ### Case 1 — WA liability
 
-Invoice date 2026-11-15; monthly service 2026-11-01 to 2026-11-30; synthetic SaaS charge \$1,440, Seattle seat evidence, explicitly sourced \$0 vendor tax. At the owner-approved illustrative 10.55% rate, engine output is \$151.92, WA-RAS-001, location code 1726\. Review then approve; only afterward add it to WA Q4 liabilities/workpaper. Fail: a different amount from the approved golden, missing source/rate/code, or totals changing merely on flagging. This monthly fixture replaces the ambiguous annual-seat example; no annual or cross-year timing rule is inferred.
+Invoice date 2026-11-15; monthly service 2026-11-01 to 2026-11-30; synthetic SaaS charge \$1,440, Seattle seat evidence, explicitly sourced \$0 vendor tax. At the illustrative 10.55% rate verified under `docs/content-verification.md`, engine output is \$151.92, WA-RAS-001, location code 1726\. Review then approve; only afterward add it to WA Q4 liabilities/workpaper. Fail: a different amount from the verified golden, missing source/rate/code, or totals changing merely on flagging. This monthly fixture replaces the ambiguous annual-seat example; no annual or cross-year timing rule is inferred.
 
 ### Case 2 — CA vs WA
 
@@ -184,7 +184,7 @@ Change Case 3's service period to 2027-01-01 through 2027-01-31; invoice date re
 
 ### Case 5 — NY hardware
 
-Synthetic laptop \$2,100, confirmed delivery in NYC, sourced \$0 vendor tax. Owner-approved 8.875% illustrative fixture yields \$186.38 with zero shipping explicitly sourced; positive shipping requires a separately reviewed fixture/base and golden. Show NY-TPP-001, code 8081 and the reviewed rate/location source; missing source/rate/code fails. Without confirmed delivery, hold; never use bill-to. Any registration/form note is an owner-reviewed draft, not filing or advice from the model.
+Synthetic laptop \$2,100, confirmed delivery in NYC, sourced \$0 vendor tax. The illustrative 8.875% fixture verified under `docs/content-verification.md` yields \$186.38 with zero shipping explicitly sourced; positive shipping requires a separately verified fixture/base and golden. Show NY-TPP-001, code 8081 and the verified rate/location source; missing source/rate/code fails. Without confirmed delivery, hold; never use bill-to. Any registration/form note uses basis text verified under `docs/content-verification.md`, not filing or advice from the model.
 
 ### Case 6 — Missing evidence
 
@@ -215,7 +215,7 @@ WA Q4 2026 (2026-10-01 to 2026-12-31), invoice-date assignment. Workpaper includ
 - No held, NHR, unreviewed, rejected, superseded, or error unit appears in any total.  
 - Nothing counts until a named human approves it.  
 - Engine amounts and rule references are copied exactly. No AI or app rounding, adjustment, or fill-in.  
-- SUPPORTED results require real owner-reviewed, effective-dated rule and rate references copied exactly. PLACEHOLDER: entries are visibly illustrative and cannot support approval or totals; unresolved applicability routes NHR with no amount.
+- SUPPORTED results require real effective-dated rule and rate references verified under `docs/content-verification.md`, copied exactly. PLACEHOLDER: entries are visibly illustrative and cannot support approval or totals; unresolved applicability routes NHR with no amount.
 
 **Who decides what**
 
@@ -225,7 +225,7 @@ WA Q4 2026 (2026-10-01 to 2026-12-31), invoice-date assignment. Workpaper includ
 
 ## 8 Glossary (short; only terms needed to read this doc)
 
-- **Admitted fact: a sourced candidate passing the signed category-specific catalog, including required recorded confirmation; see Section 4's location ladder.**  
+- **Admitted fact: a sourced candidate passing the verified category-specific catalog, including required recorded confirmation; see Section 4's location ladder.**  
 - **Approved for pursuit:** the only refund-candidate status in the demo. It means a human approved pursuing the refund. It is not cash.  
 - **Declared jurisdictions:** the states the engine may be asked about. Fixed to CA, WA and NY in the demo; supported category/rule coverage is explicit, not every category in every state.  
 - **Direction:** liability, refund candidate, or no adjustment, for engine-supported results only.  
@@ -235,7 +235,7 @@ WA Q4 2026 (2026-10-01 to 2026-12-31), invoice-date assignment. Workpaper includ
 - **No adjustment:** an engine-supported result where tax was charged correctly. It needs approval and has no amount in totals.  
 - **Refund candidate:** tax charged that the engine indicates appears not owed or overcharged. Tracked apart from liabilities.  
 - **Remote-access SaaS: hosted software accessed electronically, with no delivered copy. Computer hardware: the separate NY delivery fixture.**  
-- **Required-fact catalog:** the signed list of facts each category needs, taken from engine inputs or the reviewed rule set, never from AI.  
+- **Required-fact catalog:** the verified list of facts each category needs, taken from engine inputs or the verified rule set, never from AI.  
 - **Simulated filing: DRAFT → READY\_TO\_FILE\_SIMULATED only; freezes that workpaper version. No actual submitted, accepted, filed or paid state.**  
 - **Superseded:** an earlier result replaced by a re-run. It is kept in the trail, never deleted.  
 - **Workpaper:** the jurisdiction/period document built from approved liability lines only, with an excluded section and a separate refund list.

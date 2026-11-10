@@ -601,7 +601,7 @@ The hard rules are unchanged from v1.5. Every build decision must satisfy them.
 
 * Totals never include held, NHR, unreviewed, rejected, superseded or error units. Nothing counts until a named person approves it.  
 * Engine amounts and rule references are copied exactly, as the engine's decimal strings. The app never rounds, adjusts, recomputes or fills in a value.  
-* SUPPORTED results require real owner-reviewed, effective-dated rule and rate references. PLACEHOLDER: metadata/fixtures are visibly illustrative only and cannot support approval or totals. Unreviewed applicability or unresolved transition routes NHR with no amount; a missing reference in an otherwise supported response is a determination error.  
+* SUPPORTED results require real effective-dated rule and rate references verified under `docs/content-verification.md`. PLACEHOLDER: metadata/fixtures are visibly illustrative only and cannot support approval or totals. Unverified applicability or unresolved transition routes NHR with no amount; a missing reference in an otherwise supported response is a determination error.  
 * The model may extract printed invoice amounts with evidence, but never generates tax-decision amounts, rates, treatment or direction. The deterministic rule engine produces every tax treatment and tax-decision amount; copy its decimal strings exactly.
 
 ## 3 Locked decisions
@@ -732,7 +732,7 @@ Each rule, rate, timing basis and expected result activates only when verified u
 | WA-RAS-001 | WA, remote-access prewritten software (SaaS) | Retail sale. Buyer owes use tax when the vendor charged none | 2009-07-26 onward | RCW 82.04.050(6)(b); WAC 458-20-15503 |
 | WA-MPU-001 | WA, SaaS used in several states | Apportion by users in WA over all users, only if supported by records (seat export) | Current | WAC 458-20-15503; RCW 82.08.0208 |
 | CA-RAS-001 | CA, remote-access prewritten software, no tangible copy | Not taxable | Service periods through 2026-12-31 | Reg. 1502(f)(1)(D); Audit Manual 0421.03 (rev. April 2014\) |
-| PLACEHOLDER:CA-DP-001 | INACTIVE PROPOSAL — CA remote software transition. Adjacent treatment/date/source text is unverified research, not an active rule; NHR RULE\_TRANSITION\_UNRESOLVED until reviewed. | Taxable | Service periods starting 2027-01-01 onward | SB 122 (Stats. 2026, ch. 23); CDTFA Special Notice L-1036. Placeholder until the emergency regulations are approved |
+| PLACEHOLDER:CA-DP-001 | INACTIVE PROPOSAL — CA remote software transition. Adjacent treatment/date/source text is unverified research, not an active rule; NHR RULE\_TRANSITION\_UNRESOLVED until replaced by a verified real rule. | Taxable | Service periods starting 2027-01-01 onward | SB 122 (Stats. 2026, ch. 23); CDTFA Special Notice L-1036. Placeholder until the emergency regulations are approved |
 | NY-SW-001 | NY, prewritten software including remote access | Taxable, sourced to where users are | Current | TB-ST-128 |
 | NY-TPP-001 | NY, computer hardware delivered to NY | Taxable at the delivery location's rate, including shipping | Current | NY DTF, Use Tax for Businesses; Pub 718 |
 
@@ -776,7 +776,7 @@ ESSB 5814 (effective 2025-10-01) added IT services, custom software and similar 
 | POST /demo/events, /demo/reset | Allowlisted scenario | Simulated Ramp event or synthetic reset; demo mode only |
 | GET /purchases | Cursor, period, label, direction, hold, review status | Page of at most 100 |
 | GET /purchases/{id} | None | Lines, facts, evidence, holds, current and past determinations, available actions |
-| POST /purchases/{id}/facts | Field, value, source, reason, expected version | New fact version; supersedes approvals; re-check job. Rejects tax treatment, label, direction and tax-decision amount overrides; allows sourced printed invoice-amount facts only. Category follows the signed classifier/catalog contract. |
+| POST /purchases/{id}/facts | Field, value, source, reason, expected version | New fact version; supersedes approvals; re-check job. Rejects tax treatment, label, direction and tax-decision amount overrides; allows sourced printed invoice-amount facts only. Category follows the classifier/catalog contract verified under `docs/content-verification.md`. |
 | POST /questions/{id}/answers | Answer, evidence reference | Admitted fact or still held. "I don't know" keeps the hold |
 | POST /determinations/{id}/review | `approve` (with approval path) or `reject`; reason; expected version | Decision and ledger write; 409 stale; 422 held, NHR or error |
 | POST /determinations/{id}/refer | `leave_open` or `send_to_advisor`; note | NHR only; no treatment recorded |
@@ -878,7 +878,7 @@ Budget target remains \$75; subscription credit and offer terms are unverified h
 
 `app/            FastAPI app: api/, domain/, worker/, adapters/, contracts/, static/`  
 `web/            frontend source; build output copied to app/static`  
-`rules/          rule entries (yaml), S3 catalog, rate tables (owner-authored)`  
+`rules/          rule entries (yaml), S3 catalog, rate tables` (verified content under docs/content-verification.md)  
 `fixtures/       synthetic documents, expected results, model recordings`  
 `tests/          unit, rules, gates (never-fail), api, eval`  
 `scripts/        az setup script, seed, demo reset`  
@@ -906,9 +906,9 @@ One workflow, `.github/workflows/deploy.yml`, runs on every push and pull reques
 | RG-1 | No held, NHR, unreviewed or error unit in any total; held never shown as zero | Property tests on totals and the workpaper builder |
 | RG-2 | No net, savings or recovered field or copy | Semantic scan of models/API/UI for combined-liability-minus-refund net or savings/recovered claims; do not reject sourced invoice line net facts or the mandatory not-recovered-cash disclaimer. |
 | RG-3 | Engine amounts copied exactly | Decimal string comparison; no float on money paths |
-| RG-4 | Every SUPPORTED result has a real reviewed applicable rule/rate reference; placeholder-only/unreviewed entries produce NHR with no amount/approval | Scan of `rules/` and determinations |
+| RG-4 | Every SUPPORTED result has a real verified applicable rule/rate reference; placeholder-only/unverified entries produce NHR with no amount/approval | Scan of `rules/` and determinations |
 | RG-5 | Demo cases 1 to 7 pass | Case tests against the API |
-| RG-6 | Every fact citation resolves to its admitted source: document/page/span, named answer/confirmation, or SSO/HRIS record with provenance; every active tax rule/rate resolves to reviewed primary-source URL | Evidence check |
+| RG-6 | Every fact citation resolves to its admitted source: document/page/span, named answer/confirmation, or SSO/HRIS record with provenance; every active tax rule/rate resolves to its verified primary-source URL | Evidence check |
 | RG-7 | No duplicate effects | Duplicate webhook event, card plus bill, duplicate mark-ready |
 | RG-8 | No "filed" or "paid" without "simulated" | Scan of frontend text and export templates |
 | RG-9 | Effective dating | Verified December 2026 CA case selects its verified rule; unresolved January 2027 case stops at NHR RULE\_TRANSITION\_UNRESOLVED with no amount. A placeholder never satisfies SUPPORTED acceptance. |
@@ -941,7 +941,7 @@ Demo amounts and outcomes come from engine output. No script asserts an outcome 
 | 6 Missing evidence | Distributed-team SaaS invoice with only an HQ bill-to; users in several states | Held for "user location by state"; question asks for a seat export or a named person's answer; amount labeled "purchase amount, not tax" | Any tax figure or zero; engine called |
 | 7 Replay | The same webhook event sent twice | Existing object returned; totals unchanged. Unfinished durable jobs recover after restart via expired lease; atomic claims, unique input/version keys and transactional completion prevent duplicate effects. | Any duplicate purchase, line or amount |
 
-**Fixtures.** One golden set of 20 to 30 synthetic fixtures with expected results recorded by hand (RJ: extraction expectations; AF: engine outputs and state transitions; each checks the other). Coverage: cases 1 to 7, no tax line vs explicit zero, total mismatch, unreadable page, prompt injection, unsupported category, undeclared state, period boundary invoice dates (2026-09-30, 2026-10-01, 2026-12-31, 2027-01-01), model timeout, and a missing rule reference. Agents never record expected results.
+**Fixtures.** One golden set of 20 to 30 synthetic fixtures with expected results derived by hand under `docs/content-verification.md`: a research agent and a blind verification agent on different lanes and model families each derive the expectations independently (extraction expectations, engine outputs and state transitions) and must agree before a golden is verified. Coverage: cases 1 to 7, no tax line vs explicit zero, total mismatch, unreadable page, prompt injection, unsupported category, undeclared state, period boundary invoice dates (2026-09-30, 2026-10-01, 2026-12-31, 2027-01-01), model timeout, and a missing rule reference. Implementation agents never record expected results by running the app or the engine.
 
 **Never-fail cases.** These run in CI on every push and block merge:
 
@@ -970,7 +970,7 @@ Ordered by dependency. One issue, one pull request.
 | \# | Item | Owner | Depends on | Done when |
 | :---- | :---- | :---- | :---- | :---- |
 | 1 | Skeleton and contracts: FastAPI, static frontend, managed Postgres hosted (SQLite local optional), durable jobs/worker, closed schemas and golden shapes, deploy workflow, App Service | AF | None | A push to main deploys; `/health` is green |
-| 2 | Rule and rate tables plus engine (CA, WA, NY, effective dates) with unit tests | AF | 1 | Evaluator passes contract tests and synthetic unit fixtures, including no-adjustment and unsupported/NHR paths; authoritative case goldens/signoff are not prerequisites for scaffolding. |
+| 2 | Rule and rate tables plus engine (CA, WA, NY, effective dates) with unit tests | AF | 1 | Evaluator passes contract tests and synthetic unit fixtures, including no-adjustment and unsupported/NHR paths; verified case goldens are not prerequisites for scaffolding. |
 | 3 | S3 catalog: draft, then verify under `docs/content-verification.md` | RJ | 2 | Status verified |
 | 4 | DocumentExtractor: provider interface, strict schema, forbidden-field check, replay cache | RJ | 1 | Replay extraction for synthetic contract examples passes the extraction schema; final verified golden set follows in item 5\. |
 | 5 | Fixtures and golden set with expected results | RJ (extraction), AF (engine) | 2, 4 | 20–30 fixtures with verified expected outputs for Cases 1–7, including NHR/no-amount paths, committed; engine rounding basis in `rules/entries.yaml` is verified under `docs/content-verification.md`. |

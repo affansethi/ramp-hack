@@ -77,7 +77,7 @@ The ladder is ordered evidence, not automatic admission. A low-confidence propos
 
 **Remote-access SaaS.** Hosted software accessed electronically, with no delivered copy. The category value is `REMOTE_ACCESS_SAAS`. Required facts include delivery method, access model, service period, seat count, and user location by state for every seat. The location ladder above is the SaaS ladder. Classifying a line as SaaS is not a taxability call, and the model may not assume that "SaaS" means no media was delivered.
 
-**Computer hardware.** Tangible hardware, the demo's separate delivery case. The category value is `COMPUTER_HARDWARE`. It needs confirmed delivery or ship-to evidence, not the SaaS ladder. A sourced shipping amount, including an explicit zero, is a fact the signed rule uses for its base. Bill-to is not that evidence. The demo does not split a mixed invoice across categories.
+**Computer hardware.** Tangible hardware, the demo's separate delivery case. The category value is `COMPUTER_HARDWARE`. It needs confirmed delivery or ship-to evidence, not the SaaS ladder. A sourced shipping amount, including an explicit zero, is a fact the verified rule uses for its base. Bill-to is not that evidence. The demo does not split a mixed invoice across categories.
 
 **Unsupported category.** Category value `NO_SUPPORTED_CATEGORY`. The item routes to NHR with NHR reason `NO_SUPPORTED_CATEGORY`. It is not a third label.
 
@@ -133,7 +133,7 @@ Needs-human-review and determination errors are counts or lists with reasons, no
 
 **Tax-decision amount.** The engine's expected tax and its adjustment amount. The adjustment is tax owed on a liability, the amount in question on a refund candidate, or none when charged correctly. The determination stores that adjustment as the engine amount, the engine's decimal string, copied as-is. Tax charged as printed on the invoice is a fact, which the model may extract with evidence. A printed amount is not a tax-decision amount. The model does not generate rates, expected tax, or amounts owed.
 
-**Rule reference.** The reviewed rule and rate reference copied onto a supported determination, unchanged. A supported result needs a real owner-reviewed, effective-dated reference. A source title by itself is not that reference. If a supported response arrives without one, the outcome is a determination error with no amount, not a guess and not a zero.
+**Rule reference.** The verified rule and rate reference copied onto a supported determination, unchanged. A supported result needs a real effective-dated reference verified under `docs/content-verification.md`. A source title by itself is not that reference. If a supported response arrives without one, the outcome is a determination error with no amount, not a guess and not a zero.
 
 **PLACEHOLDER entry.** A rule entry whose id starts with the prefix `PLACEHOLDER:`. The prefix is not a label, not a unit status, and not a third result. The entry stays inactive and illustrative. It cannot support an approval or a total. Placeholder and other unreviewed entries route to NHR with no amount: `RULE_TRANSITION_UNRESOLVED` when the gap is an unresolved transition, otherwise `ENGINE_UNSUPPORTED`.
 
