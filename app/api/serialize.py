@@ -68,6 +68,7 @@ def purchase_summary(session: Session, purchase: Purchase) -> dict[str, object]:
         "extraction_mode": purchase.extraction_mode,
         "facts_version": purchase.facts_version,
         "stop_reason": stop_reason(holds, determinations),
+        "pending_results": _pending_results(holds, determinations),
     }
 
 
@@ -235,6 +236,36 @@ def _supported_money(supported: bool, value: str | None) -> Money | None:
     if not supported or not value:
         return None
     return Money.model_validate({"value": value, "currency": "USD"})
+
+
+def _pending_results(
+    holds: list[Hold], determinations: list[Determination]
+) -> list[dict[str, object]]:
+    """Unreviewed engine-supported amounts shown on the list, never in a total."""
+    if any(hold.active for hold in holds):
+        return []
+    pending: list[dict[str, object]] = []
+    for row in sorted(determinations, key=lambda item: item.id):
+        if not row.is_current:
+            continue
+        if row.unit_status != "READY_FOR_REVIEW":
+            continue
+        if row.label != "ENGINE_SUPPORTED":
+            continue
+        supported = True
+        money = _supported_money(supported, row.engine_amount)
+        pending.append(
+            {
+                "determination_id": row.id,
+                "jurisdiction": row.jurisdiction,
+                "direction": _supported_text(supported, row.direction),
+                "engine_amount": money.model_dump(mode="json")
+                if money is not None
+                else None,
+                "note": "unreviewed; not in any total",
+            }
+        )
+    return pending
 
 
 def _evidence_by_fact(
