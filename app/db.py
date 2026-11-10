@@ -45,6 +45,7 @@ def init_database(url: str) -> sessionmaker[Session]:
         # older scratch database keeps working.
         from app.migrations import (
             upgrade_audit_hashes,
+            upgrade_audit_stage_index,
             upgrade_fetch_input,
             upgrade_session_csrf,
             upgrade_workpapers,
@@ -52,6 +53,7 @@ def init_database(url: str) -> sessionmaker[Session]:
 
         Base.metadata.create_all(engine)
         upgrade_audit_hashes(engine)
+        upgrade_audit_stage_index(engine)
         upgrade_fetch_input(engine)
         upgrade_session_csrf(engine)
         upgrade_workpapers(engine)

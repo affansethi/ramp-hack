@@ -26,7 +26,6 @@ from app.domain.holds import (
 from app.domain.moneyutil import differs_by_more_than_one_cent, parse_decimal
 from app.domain.ruleset import Ruleset
 from app.models import (
-    AuditEvent,
     Determination,
     Document,
     Evidence,
@@ -260,7 +259,7 @@ def ingest_fetched_record(session: Session, job: Job, record: dict[str, Any]) ->
     if existing is not None:
         # Amount and OCR feed the cross-check. A new value versions the purchase,
         # supersedes the current result, and queues that check again.
-        _refresh_fetched_inputs(session, existing, amount, tax)
+        _refresh_fetched_inputs(session, existing, amount, tax, record)
         event.purchase_id = job.purchase_id = existing.id
         return
     vendor = record["vendor"] or ""
@@ -270,7 +269,7 @@ def ingest_fetched_record(session: Session, job: Job, record: dict[str, Any]) ->
         session, job.org_id, vendor, invoice_number, invoice_date, amount
     )
     if matched is not None:
-        _link_exact_invoice(session, matched, event, tax, job=job)
+        _link_exact_invoice(session, matched, event, tax, job=job, record=record)
         return
     scenario = (
         get_scenario(inputs["demo_scenario"]) if inputs.get("demo_scenario") else None
@@ -327,11 +326,16 @@ def ingest_fetched_record(session: Session, job: Job, record: dict[str, Any]) ->
                 select(Document).where(Document.purchase_id == result.purchase_id)
             )
             if purchase is not None and document is not None:
-                _store_ramp_receipt_fields(session, purchase, document, record)
+                pending = _pending_ramp_evidence(session, purchase, record)
+                _apply_ramp_evidence(session, purchase, pending)
 
 
 def _refresh_fetched_inputs(
-    session: Session, purchase: Purchase, amount: str, tax: str | None
+    session: Session,
+    purchase: Purchase,
+    amount: str,
+    tax: str | None,
+    record: dict[str, Any] | None = None,
 ) -> None:
     changed = False
     if purchase.ramp_entity_amount != amount:
@@ -340,10 +344,12 @@ def _refresh_fetched_inputs(
     if purchase.ramp_ocr_taxes != tax:
         purchase.ramp_ocr_taxes = tax
         changed = True
-    if not changed:
+    pending = _pending_ramp_evidence(session, purchase, record) if record else []
+    if not changed and not pending:
         return
     purchase.facts_version += 1
     _supersede_current(session, purchase)
+    _apply_ramp_evidence(session, purchase, pending)
     _enqueue(session, purchase.org_id, purchase.id)
 
 
@@ -377,9 +383,20 @@ def advance_purchase(session: Session, purchase_id: str, ruleset: Ruleset) -> No
         ).all()
     )
     _apply_cross_check(purchase, lines, facts)
-    _stage_audit(
-        session, purchase.org_id, "hold_check", purchase.id, purchase.facts_version
-    )
+    version = purchase.facts_version
+
+    def stage(name: str) -> None:
+        _stage_audit(
+            session,
+            purchase.org_id,
+            name,
+            purchase.id,
+            version,
+            ruleset_version=ruleset.version,
+        )
+
+    _stage_audit(session, purchase.org_id, "cross_check", purchase.id, version)
+    stage("classify")
     if not purchase.category or purchase.category not in SUPPORTED_CATEGORIES:
         if (
             purchase.category not in SUPPORTED_CATEGORIES
@@ -391,6 +408,7 @@ def advance_purchase(session: Session, purchase_id: str, ruleset: Ruleset) -> No
         _set_hold(session, purchase, HoldDecision("MISSING_REQUIRED_FACT", "category"))
         purchase.item_status = "HELD"
         return
+    stage("hold_check")
     hold = _first_hold(purchase.category, lines, facts, ruleset)
     if hold is not None:
         _set_hold(session, purchase, hold)
@@ -398,6 +416,7 @@ def advance_purchase(session: Session, purchase_id: str, ruleset: Ruleset) -> No
         return
     _clear_holds(session, purchase, release_version=purchase.facts_version)
     states = _states_for_purchase(lines, facts)
+    stage("jurisdiction_set")
     if undeclared(states):
         _item_nhr(session, purchase, ruleset, "UNDECLARED_JURISDICTION", lines)
         return
@@ -407,15 +426,14 @@ def advance_purchase(session: Session, purchase_id: str, ruleset: Ruleset) -> No
         )
         purchase.item_status = "HELD"
         return
+    stage("engine_call")
     for line in lines:
         line_states = _states_for_line(line, facts)
         for jurisdiction in line_states:
             _evaluate_one(
                 session, purchase, line, jurisdiction, facts, ruleset, len(states)
             )
-    _stage_audit(
-        session, purchase.org_id, "determine", purchase.id, purchase.facts_version
-    )
+    stage("response_check")
     purchase.item_status = "DETERMINED"
 
 
@@ -511,6 +529,8 @@ def _ingest(
         stored_lines.append(row)
     session.flush()
     _write_facts(session, purchase, document, stored_lines, lines, bill_to)
+    # A new canonical purchase: deduplication found no exact match to merge.
+    _stage_audit(session, org_id, "deduplicate", purchase.id, purchase.facts_version)
     _stage_audit(session, org_id, "extract", purchase.id, purchase.facts_version)
     _stage_audit(session, org_id, "admit_facts", purchase.id, purchase.facts_version)
     event.purchase_id = purchase.id
@@ -683,85 +703,174 @@ def _write_facts(
             )
 
 
-def _store_ramp_receipt_fields(
-    session: Session,
-    purchase: Purchase,
-    document: Document,
-    record: dict[str, Any],
-) -> None:
-    for item in record.get("receipt_items") or []:
-        if not isinstance(item, dict):
-            continue
-        amount = item.get("amount") or item.get("total")
-        if not isinstance(amount, str):
-            continue
-        parse_decimal(amount)
-        _add_fact(
-            session,
-            purchase,
-            document,
-            None,
-            "line_amount",
-            amount,
-            "CONFIRMED",
-            None,
-            f"Ramp receipt amount {amount}",
-        )
-    for item in record.get("ocr_line_items") or []:
-        if not isinstance(item, dict):
-            continue
-        tax = item.get("tax_amount") or item.get("tax")
-        if not isinstance(tax, str):
-            continue
-        parse_decimal(tax)
-        _add_fact(
-            session,
-            purchase,
-            document,
-            None,
-            "tax_charged",
-            tax,
-            "CONFIRMED",
-            None,
-            f"Ramp OCR tax {tax}",
-        )
+@dataclass(frozen=True)
+class _RampEvidence:
+    key: str
+    line_id: str | None
+    value: str
+    confirmation: str
+    rung: int | None
+    passage: str
+
+
+# Ramp receipt and OCR items are sourced evidence for review and the
+# cross-check (Tech Spec v2 §8). They use their own keys so a Ramp value never
+# silently replaces an admitted line_amount or tax_charged fact.
+_RECEIPT_FIELDS = (
+    ("description", "receipt_line_description", False),
+    ("total", "receipt_line_amount", True),
+    ("tax", "receipt_line_tax", True),
+)
+_OCR_FIELDS = (
+    ("description", "ocr_line_description", False),
+    ("amount", "ocr_line_amount", True),
+    ("tax_amount", "ocr_line_tax", True),
+)
+
+
+def _ramp_evidence(record: dict[str, Any], line_ids: list[str]) -> list[_RampEvidence]:
+    found: list[_RampEvidence] = []
+
+    def items(name: str, fields: tuple[tuple[str, str, bool], ...], label: str) -> None:
+        for index, item in enumerate(record.get(name) or []):
+            if not isinstance(item, dict):
+                continue
+            line_id = line_ids[index] if index < len(line_ids) else None
+            for source_key, key, money in fields:
+                value = item.get(source_key)
+                if not isinstance(value, str) or not value.strip():
+                    continue
+                if money:
+                    parse_decimal(value)  # decimal string or refuse, never float
+                found.append(
+                    _RampEvidence(
+                        key,
+                        line_id,
+                        value,
+                        "UNCONFIRMED",
+                        None,
+                        f"{label} item {index + 1} {source_key} {value}",
+                    )
+                )
+
+    items("receipt_items", _RECEIPT_FIELDS, "Ramp merchant_data.receipt")
+    items("ocr_line_items", _OCR_FIELDS, "Ramp receipt OCR")
     holder = record.get("card_holder")
     if isinstance(holder, str) and holder.strip():
-        _add_fact(
-            session,
-            purchase,
-            document,
-            None,
-            "user_location",
-            holder.strip(),
-            "UNCONFIRMED",
-            5,
-            "card_holder is rung 5 and does not confirm use",
+        found.append(
+            _RampEvidence(
+                "user_location",
+                None,
+                holder.strip(),
+                "UNCONFIRMED",
+                5,
+                "card_holder is rung 5 and does not confirm use",
+            )
         )
     if record.get("merchant_location_mismatch"):
-        _add_fact(
-            session,
-            purchase,
-            document,
-            None,
-            "merchant_location_mismatch",
-            "true",
-            "UNCONFIRMED",
-            None,
-            "Merchant-location mismatch is a flag only, not a location fact",
+        found.append(
+            _RampEvidence(
+                "merchant_location_mismatch",
+                None,
+                "true",
+                "UNCONFIRMED",
+                None,
+                "Merchant-location mismatch is a flag only, not a location fact",
+            )
         )
     bill_to = record.get("bill_to")
     if isinstance(bill_to, str) and bill_to.strip():
-        _add_fact(
-            session,
-            purchase,
-            document,
+        found.append(
+            _RampEvidence(
+                "bill_to",
+                None,
+                bill_to.strip(),
+                "UNCONFIRMED",
+                None,
+                "Bill-to is context only and does not confirm use or delivery.",
+            )
+        )
+    return found
+
+
+def _pending_ramp_evidence(
+    session: Session, purchase: Purchase, record: dict[str, Any]
+) -> list[tuple[_RampEvidence, Fact | None]]:
+    """Ramp evidence that is new or changed, with the fact each one replaces."""
+    line_ids = list(
+        session.scalars(
+            select(PurchaseLine.id)
+            .where(PurchaseLine.purchase_id == purchase.id)
+            .order_by(PurchaseLine.line_number)
+        ).all()
+    )
+    current = list(
+        session.scalars(
+            select(Fact).where(
+                Fact.purchase_id == purchase.id,
+                Fact.origin == "RAMP_RECORD",
+                Fact.is_current.is_(True),
+            )
+        ).all()
+    )
+    pending: list[tuple[_RampEvidence, Fact | None]] = []
+    for item in _ramp_evidence(record, line_ids):
+        prior = next(
+            (
+                fact
+                for fact in current
+                if fact.field_key == item.key
+                and fact.line_id == item.line_id
+                and fact.evidence_rung == item.rung
+            ),
             None,
-            "bill_to",
-            bill_to.strip(),
-            "UNCONFIRMED",
-            None,
-            "Bill-to is context only and does not confirm use or delivery.",
+        )
+        if prior is not None and prior.value == item.value:
+            continue
+        pending.append((item, prior))
+    return pending
+
+
+def _apply_ramp_evidence(
+    session: Session,
+    purchase: Purchase,
+    pending: list[tuple[_RampEvidence, Fact | None]],
+) -> None:
+    if not pending:
+        return
+    document = session.scalar(
+        select(Document).where(Document.purchase_id == purchase.id)
+    )
+    for item, prior in pending:
+        if prior is not None:
+            prior.is_current = False
+        fact = Fact(
+            id=str(uuid4()),
+            org_id=purchase.org_id,
+            purchase_id=purchase.id,
+            line_id=item.line_id,
+            field_key=item.key,
+            value=item.value,
+            origin="RAMP_RECORD",
+            source="ramp transaction",
+            evidence_rung=item.rung,
+            confirmation=item.confirmation,
+            version=purchase.facts_version,
+            is_current=True,
+            supersedes=prior.id if prior is not None else None,
+        )
+        session.add(fact)
+        session.flush()
+        # RG-6: every Ramp-record fact resolves to an evidence row.
+        session.add(
+            Evidence(
+                id=str(uuid4()),
+                fact_id=fact.id,
+                document_id=document.id if document is not None else None,
+                page=1,
+                passage=item.passage,
+                provenance="ramp_record",
+            )
         )
 
 
@@ -1075,10 +1184,19 @@ def _link_exact_invoice(
     ocr_taxes: str | None,
     *,
     job: Job | None,
+    record: dict[str, Any] | None = None,
 ) -> Job:
-    """Keep both source events on one purchase and reconcile a new receipt tax."""
+    """Keep both source events on one purchase and reconcile new receipt evidence."""
     event.purchase_id = purchase.id
+    before = purchase.facts_version
     _note_ocr_evidence(session, purchase, ocr_taxes)
+    pending = _pending_ramp_evidence(session, purchase, record) if record else []
+    if pending:
+        if purchase.facts_version == before:
+            # New evidence versions the purchase and supersedes current results.
+            purchase.facts_version += 1
+            _supersede_current(session, purchase)
+        _apply_ramp_evidence(session, purchase, pending)
     _stage_audit(
         session,
         purchase.org_id,
@@ -1207,22 +1325,31 @@ def _stage_audit(
     object_id: str,
     version: int,
     object_type: str = "purchase",
+    *,
+    ruleset_version: str | None = None,
 ) -> None:
-    found = session.scalar(
-        select(AuditEvent).where(
-            AuditEvent.org_id == org_id,
-            AuditEvent.object_type == "purchase",
-            AuditEvent.object_id == object_id,
-            AuditEvent.command == command,
-            AuditEvent.object_version == version,
-        )
-    )
-    if found is not None:
-        return
+    """One audit event per stage and immutable input version (Tech Spec v2 §4).
+
+    The input identity is the object version plus, for stages that read the
+    rules, the ruleset version, carried in the free-text command field. A
+    retry for the same identity writes nothing; the check runs under the
+    audit writer's lock and a unique index backs it up.
+    """
+    if ruleset_version is not None:
+        command = f"{command}@{ruleset_version}"
     # Same writer as fact and review commands, so before_hash stays one chain.
     from app.domain.commands import _audit
 
-    _audit(session, org_id, "system", command, "purchase", object_id, version)
+    _audit(
+        session,
+        org_id,
+        "system",
+        command[:80],
+        object_type,
+        object_id,
+        version,
+        dedupe=True,
+    )
 
 
 def _find_event(session: Session, org_id: str, event_id: str) -> SourceEvent | None:

@@ -68,7 +68,10 @@ class RampSimulator:
         )
         merchant = record.get("merchant_location") or {}
         holder = record.get("card_holder") or {}
-        receipt_items = (record.get("merchant_data") or {}).get("receipt") or []
+        # Tech Spec v2 §8: merchant_data.receipt.items[]
+        # {description, quantity, unit_cost, tax, total}.
+        receipt = (record.get("merchant_data") or {}).get("receipt")
+        receipt_items = receipt.get("items") or [] if isinstance(receipt, dict) else []
         ocr_lines = [
             line
             for rid in receipt_ids
@@ -87,9 +90,7 @@ class RampSimulator:
             currency_code=record["currency_code"],
             vendor=record.get("merchant_name", record.get("vendor", "")),
             invoice_number=record.get("invoice_number", ""),
-            invoice_date=record.get(
-                "invoice_date", record.get("user_transaction_time", "")[:10]
-            ),
+            invoice_date=_invoice_date(record),
             ocr_taxes=total,
             receipt_items=receipt_items,
             ocr_line_items=ocr_lines,
@@ -97,3 +98,16 @@ class RampSimulator:
             merchant_location_mismatch=mismatch,
             bill_to=record.get("bill_to"),
         )
+
+
+def _invoice_date(record: dict[str, Any]) -> str:
+    """Prefer the bill's invoice_date; else the card time's date part.
+
+    A null or non-string time gives "" instead of raising, so a later stage
+    sees a missing date rather than the fetch job failing.
+    """
+    invoice_date = record.get("invoice_date")
+    if isinstance(invoice_date, str) and invoice_date:
+        return invoice_date
+    stamp = record.get("user_transaction_time")
+    return stamp[:10] if isinstance(stamp, str) else ""
