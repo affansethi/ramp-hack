@@ -47,7 +47,11 @@ def test_planted_bad_string_fails_the_scan(tmp_path: Path) -> None:
 
 
 def test_rg2_allows_not_recovered_cash_and_bans_net_claims() -> None:
-    blob = _walk(ROOT / "app" / "models.py") + _walk(ROOT / "app" / "api")
+    blob = (
+        _walk(ROOT / "app" / "models.py")
+        + _walk(ROOT / "app" / "api")
+        + _walk(ROOT / "app" / "domain" / "commands.py")
+    )
     web = ROOT / "web"
     if web.exists():
         blob += _walk(web)
