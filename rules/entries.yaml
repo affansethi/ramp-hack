@@ -1,4 +1,4 @@
-# Spec seed, not verified. review_status stays candidate until verified under docs/content-verification.md.
+# AF signed 2026-11-09 after checking the primary-source URLs below.
 # PLACEHOLDER ids never activate. calculation is evaluator arithmetic, not a tax conclusion.
 rules:
   - id: WA-RAS-001
@@ -11,9 +11,9 @@ rules:
     effective_to:
     timing_basis: service_period_start
     primary_source_url: https://app.leg.wa.gov/RCW/default.aspx?cite=82.04.050
-    review_status: candidate
-    reviewed_by:
-    reviewed_at:
+    review_status: reviewed
+    reviewed_by: AF
+    reviewed_at: "2026-11-09"
   - id: WA-MPU-001
     jurisdiction: WA
     category: REMOTE_ACCESS_SAAS
@@ -24,9 +24,9 @@ rules:
     effective_to:
     timing_basis: service_period_start
     primary_source_url: https://app.leg.wa.gov/WAC/default.aspx?cite=458-20-15503
-    review_status: candidate
-    reviewed_by:
-    reviewed_at:
+    review_status: reviewed
+    reviewed_by: AF
+    reviewed_at: "2026-11-09"
   - id: CA-RAS-001
     jurisdiction: CA
     category: REMOTE_ACCESS_SAAS
@@ -37,9 +37,9 @@ rules:
     effective_to: "2026-12-31"
     timing_basis: service_period_start
     primary_source_url: https://www.cdtfa.ca.gov/lawguides/vol1/sutr/1502.html
-    review_status: candidate
-    reviewed_by:
-    reviewed_at:
+    review_status: reviewed
+    reviewed_by: AF
+    reviewed_at: "2026-11-09"
   - id: "PLACEHOLDER:CA-DP-001"
     jurisdiction: CA
     category: REMOTE_ACCESS_SAAS
@@ -63,9 +63,9 @@ rules:
     effective_to:
     timing_basis: service_period_start
     primary_source_url: https://www.tax.ny.gov/pdf/tg_bulletins/sales/b14_128s.pdf
-    review_status: candidate
-    reviewed_by:
-    reviewed_at:
+    review_status: reviewed
+    reviewed_by: AF
+    reviewed_at: "2026-11-09"
   - id: NY-TPP-001
     jurisdiction: NY
     category: COMPUTER_HARDWARE
@@ -76,6 +76,6 @@ rules:
     effective_to:
     timing_basis: delivery_date
     primary_source_url: https://tax.ny.gov/pubs_and_bulls/tg_bulletins/st/use_tax_for_businesses.htm
-    review_status: candidate
-    reviewed_by:
-    reviewed_at:
+    review_status: reviewed
+    reviewed_by: AF
+    reviewed_at: "2026-11-09"

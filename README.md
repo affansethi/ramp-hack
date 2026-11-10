@@ -69,7 +69,7 @@ CI runs the same command in [.github/workflows/ci.yml](.github/workflows/ci.yml)
 
 ## Storage
 
-Documents live in Azure Blob Storage (`ramphackaffanandrj26` / container `data`), accessed via `DefaultAzureCredential` from `app/adapters/storage.py` — locally your `az login`, in Azure the app's managed identity. No keys or connection strings anywhere. If blob access returns a 403/auth error, ask Affan to give your Azure account the **Storage Blob Data Contributor** role on the storage account (role changes can take a few minutes to apply).
+Documents live in Azure Blob Storage (`ramphackaffanandrj26` / container `data`), accessed via `DefaultAzureCredential` from `app/adapters/storage.py` — locally your `az login`, in Azure the app's managed identity. No keys or connection strings anywhere. Storage is enabled only when `AZURE_STORAGE_ACCOUNT_URL` or `STORAGE_ACCOUNT_URL` is set, or when running in App Service (`WEBSITE_SITE_NAME` is set, which uses the default account URL above). The container is `STORAGE_CONTAINER` (default `data`). When storage is not enabled, the adapter raises `StorageUnavailable` without any credential call and `/health` reports `storage: skipped`, so CI never needs Azure. Originals are stored at `documents/{sha256}` and frozen exports at `exports/{workpaper_id}/v{version}-{fingerprint}.{csv|json}`, both written with `overwrite=False`. If blob access returns a 403/auth error, ask Affan to give your Azure account the **Storage Blob Data Contributor** role on the storage account (role changes can take a few minutes to apply).
 
 ## Deployment
 

@@ -12,16 +12,15 @@ Exactly one worker process: the background job poller runs in-process.
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from uuid import uuid4
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api import health, routes
+from app.api.guards import MutationGuardMiddleware, domain_error_response
 from app.config import Settings, load_settings
 from app.context import build_context
-from app.contracts.errors import ErrorBody, ErrorResponse
 from app.domain.errors import DomainError
 from app.worker.poller import run_until_stopped
 
@@ -60,6 +59,7 @@ def create_app(
     app.state.settings = settings
     app.state.ctx = ctx
     app.add_exception_handler(DomainError, _domain_error)
+    app.add_middleware(MutationGuardMiddleware)
     app.include_router(health.router)
     app.include_router(routes.router, prefix="/api/v1")
     app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
@@ -70,16 +70,7 @@ def _domain_error(request: Request, exc: Exception) -> JSONResponse:
     del request
     if not isinstance(exc, DomainError):
         raise exc
-    payload = ErrorResponse(
-        error=ErrorBody(
-            code=exc.code,
-            message=exc.message,
-            field_errors=exc.field_errors,
-            retryable=exc.retryable,
-            correlation_id=uuid4().hex,
-        )
-    )
-    return JSONResponse(status_code=exc.status, content=payload.model_dump(mode="json"))
+    return domain_error_response(exc)
 
 
 app = create_app()

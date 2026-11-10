@@ -49,6 +49,8 @@ _DETERMINATION_KEYS = {
     "error_code",
     "engine_request",
     "engine_response",
+    "refund_letter_id",
+    "rule_source_url",
 }
 
 _BANNED = {"net", "savings", "recovered"}
@@ -114,6 +116,7 @@ def test_determination_json_keeps_its_keys_and_copies_decimal_strings() -> None:
     assert payload["rule_reference"] == "WA-RAS-001"
     assert payload["engine_request"] is None
     assert payload["engine_response"] is None
+    assert payload["rule_source_url"] is None
     assert "data_mode" not in payload
     assert "engine_mode" not in payload
     assert "service_period_start" not in payload
@@ -141,7 +144,9 @@ def test_nhr_engine_amount_stays_null() -> None:
     assert payload["direction"] is None
     assert payload["derived_direction"] is False
     assert payload["rate"] is None
+    assert payload["location_code"] is None
     assert payload["rule_reference"] is None
+    assert payload["rule_source_url"] is None
     assert payload["nhr_reason"] == "ENGINE_UNSUPPORTED"
 
 
@@ -162,6 +167,9 @@ def test_error_determination_has_no_amount() -> None:
     )
     assert payload["label"] is None
     assert payload["engine_amount"] is None
+    assert payload["rate"] is None
+    assert payload["location_code"] is None
+    assert payload["rule_source_url"] is None
     assert payload["error_code"] == "MALFORMED"
 
 
@@ -194,6 +202,7 @@ def test_read_models_have_no_net_savings_or_recovered_field() -> None:
 
 def test_determination_money_rejects_a_binary_float() -> None:
     body = _determination_json(_row())
+    body.pop("rule_source_url")
     body["engine_amount"] = {"value": 0.1, "currency": "USD"}
     with pytest.raises(ValidationError):
         DeterminationRead.model_validate(body)
@@ -202,6 +211,7 @@ def test_determination_money_rejects_a_binary_float() -> None:
 @pytest.mark.parametrize("banned", sorted(_BANNED))
 def test_determination_rejects_banned_fields(banned: str) -> None:
     body = _determination_json(_row())
+    body.pop("rule_source_url")
     body[banned] = {"value": "1.00", "currency": "USD"}
     with pytest.raises(ValidationError):
         DeterminationRead.model_validate(body)
