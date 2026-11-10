@@ -257,12 +257,9 @@ def ingest_fetched_record(
         )
     )
     if existing is not None:
-        # Same Ramp transaction: keep this event on the purchase and reconcile
-        # a new receipt tax without a second set of lines. Queue the advance
-        # before this fetch job takes the purchase id, or it looks pending.
-        _note_ocr_evidence(session, existing, tax)
-        if tax is not None:
-            _enqueue(session, job.org_id, existing.id)
+        # Amount and OCR feed the cross-check. A new value versions the purchase,
+        # supersedes the current result, and queues that check again.
+        _refresh_fetched_inputs(session, existing, amount, tax)
         event.purchase_id = job.purchase_id = existing.id
         return
     vendor = record["vendor"] or ""
@@ -323,6 +320,23 @@ def ingest_fetched_record(
     if result.purchase_id is not None:
         for other in ambiguous:
             _record_ambiguous(session, job.org_id, result.purchase_id, other.id)
+
+
+def _refresh_fetched_inputs(
+    session: Session, purchase: Purchase, amount: str, tax: str | None
+) -> None:
+    changed = False
+    if purchase.ramp_entity_amount != amount:
+        purchase.ramp_entity_amount = amount
+        changed = True
+    if purchase.ramp_ocr_taxes != tax:
+        purchase.ramp_ocr_taxes = tax
+        changed = True
+    if not changed:
+        return
+    purchase.facts_version += 1
+    _supersede_current(session, purchase)
+    _enqueue(session, purchase.org_id, purchase.id)
 
 
 def advance_purchase(session: Session, purchase_id: str, ruleset: Ruleset) -> None:

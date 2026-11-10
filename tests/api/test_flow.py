@@ -11,10 +11,13 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.api.guards import CSRF_HEADER
+from app.api.routes import COOKIE
 from app.config import load_settings
 from app.main import create_app
 from app.models import Job, Purchase, SourceEvent
 from app.worker.poller import poll_once
+from tests.api.conftest import assert_refund_candidates_stay_separate
 
 ROOT = Path(__file__).resolve().parents[2]
 GOOD_ENV = {
@@ -25,8 +28,36 @@ GOOD_ENV = {
 }
 
 
-def _headers(key: str) -> dict[str, str]:
-    return {"Idempotency-Key": key, "X-Requested-With": "taxleak"}
+_csrf_token: str | None = None
+
+
+def reset_csrf() -> None:
+    global _csrf_token
+    _csrf_token = None
+
+
+def _headers(key: str, *, csrf: bool = True) -> dict[str, str]:
+    headers = {"Idempotency-Key": key, "X-Requested-With": "taxleak"}
+    if csrf and _csrf_token:
+        headers[CSRF_HEADER] = _csrf_token
+    return headers
+
+
+def login(client: TestClient, key: str = "login") -> str:
+    """Sign in, keep the HttpOnly cookie, and remember the CSRF token."""
+    global _csrf_token
+    _csrf_token = None
+    response = client.post("/api/v1/demo/login", json={}, headers=_headers(key))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert "session_id" not in body
+    token = body["csrf_token"]
+    assert isinstance(token, str) and token
+    cookie = client.cookies.get(COOKIE)
+    assert isinstance(cookie, str) and cookie != token
+    assert cookie not in response.text
+    _csrf_token = token
+    return token
 
 
 def _activate(dest: Path) -> None:
@@ -41,7 +72,7 @@ def _activate(dest: Path) -> None:
 
 
 @pytest.fixture
-def signed_client(tmp_path: Path) -> TestClient:
+def signed_client(tmp_path: Path, _reset_csrf_token: None) -> TestClient:
     rules = tmp_path / "rules"
     _activate(rules)
     database = tmp_path / "app.db"
@@ -53,8 +84,7 @@ def signed_client(tmp_path: Path) -> TestClient:
     )
     app = create_app(settings, start_worker=False)
     with TestClient(app) as client:
-        login = client.post("/api/v1/demo/login", json={}, headers=_headers("login"))
-        assert login.status_code == 200
+        login(client)
         yield client
 
 
@@ -83,12 +113,7 @@ def test_unsigned_catalog_holds_case_1_with_no_tax_amount(tmp_path: Path) -> Non
     )
     app = create_app(settings, start_worker=False)
     with TestClient(app) as client:
-        assert (
-            client.post(
-                "/api/v1/demo/login", json={}, headers=_headers("login")
-            ).status_code
-            == 200
-        )
+        login(client)
         created = _run(client, "case1", "case1")
         detail = client.get(f"/api/v1/purchases/{created['purchase_id']}")
         body = detail.json()
@@ -117,15 +142,17 @@ def test_signed_case_1_approves_the_engine_string(signed_client: TestClient) -> 
     )
     assert approved.status_code == 200, approved.text
     totals = signed_client.get("/api/v1/totals").json()
-    assert totals["approved_liabilities"] == [
+    engine = determination["engine_amount"]["value"]
+    assert totals["approved_liabilities"]["by_jurisdiction"] == [
         {
             "jurisdiction": "WA",
             "period": "2026Q4",
-            "amount": {"value": "151.92", "currency": "USD"},
+            "total": {"value": engine, "currency": "USD"},
+            "line_count": 1,
         }
     ]
-    assert "savings" not in totals
-    assert "recovered" not in totals["approved_liabilities"][0]
+    assert totals["approved_liabilities"]["message"] is None
+    assert_refund_candidates_stay_separate(totals)
 
 
 def test_case_6_holds_for_location_and_stays_out_of_totals(
@@ -140,7 +167,10 @@ def test_case_6_holds_for_location_and_stays_out_of_totals(
     assert detail["purchase_amount_note"] == "purchase amount, not tax"
     totals = signed_client.get("/api/v1/totals").json()
     assert totals["held"]["count"] == 1
-    assert totals["approved_liabilities_message"] == "No approved liabilities"
+    assert totals["held"]["label"] == "purchase amount, not tax"
+    assert totals["approved_liabilities"]["message"] == "No approved liabilities"
+    assert "0.00" not in json.dumps(totals["approved_liabilities"])
+    assert_refund_candidates_stay_separate(totals)
 
 
 def test_case_4_is_unresolved_transition_with_no_amount(
@@ -282,11 +312,8 @@ def test_bad_signature_stores_nothing_payable(tmp_path: Path) -> None:
         with _open(client) as session:
             purchase_id = session.get(Job, good.json()["job_id"]).purchase_id
         assert poll_once(client.app.state.ctx) == 1
-        client.post("/api/v1/demo/login", json={}, headers=_headers("login-hook"))
-        detail = client.get(
-            f"/api/v1/purchases/{purchase_id}",
-            headers=_headers("read-hook"),
-        ).json()
+        login(client, "login-hook")
+        detail = client.get(f"/api/v1/purchases/{purchase_id}").json()
         assert detail["determinations"] == []
         assert detail["queue"] == "held"
 

@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 from app.models import Determination, Fact, Hold, Job, Purchase, SourceEvent
 from app.worker.poller import poll_once
-from tests.api.test_flow import signed_client  # noqa: F401
+from tests.api.test_flow import _headers, _run, signed_client  # noqa: F401
 
 
 def _send(client: TestClient, event: str, kind: str, object_id: str, **data: str):
@@ -142,12 +142,14 @@ def test_transaction_events_share_purchase(
     ctx = signed_client.app.state.ctx
     for index, kind in enumerate(kinds):
         _send(signed_client, f"evt-{index}", kind, "synthetic-id")
-        # Fetch then advance; bounded, including when advance is already pending.
         assert poll_once(ctx) == 1
-        assert poll_once(ctx) == 1
+        # Same record: no second advance. A changed record queues one recheck.
+        assert poll_once(ctx) == (0 if index else 1)
     with ctx.session_factory() as session:
         purchases = session.scalars(select(Purchase)).all()
         assert len(purchases) == 1
+        assert purchases[0].facts_version == 1
+        assert purchases[0].ramp_entity_amount == "123.450"
         assert {
             event.purchase_id for event in session.scalars(select(SourceEvent))
         } == {purchases[0].id}
@@ -189,6 +191,143 @@ def test_receipt_id_preserves_absent_tax_versus_zero(
     assert poll_once(ctx) == 1
     with ctx.session_factory() as session:
         assert session.scalar(select(Purchase)).ramp_ocr_taxes == tax
+
+
+def test_later_cleared_event_refreshes_entity_amount(
+    signed_client: TestClient,  # noqa: F811
+) -> None:
+    _record(signed_client)
+    ctx = signed_client.app.state.ctx
+    _send(
+        signed_client,
+        "evt-receipt-amount",
+        "transactions.receipt_added",
+        "synthetic-id",
+    )
+    assert poll_once(ctx) == 1
+    assert poll_once(ctx) == 1
+    ctx.ramp.transactions["synthetic-id"]["entity_amount"] = "150.00"
+    ctx.ramp.transactions["synthetic-id"]["amount"] = "1.00"
+    _send(signed_client, "evt-cleared-amount", "transactions.cleared", "synthetic-id")
+    assert poll_once(ctx) == 1
+    assert poll_once(ctx) == 1
+    with ctx.session_factory() as session:
+        purchases = session.scalars(select(Purchase)).all()
+        assert len(purchases) == 1
+        purchase = purchases[0]
+        assert purchase.ramp_entity_amount == "150.00"
+        assert purchase.facts_version == 2
+        amount = session.scalar(
+            select(Fact).where(
+                Fact.purchase_id == purchase.id,
+                Fact.field_key == "line_amount",
+                Fact.is_current.is_(True),
+            )
+        )
+        assert amount is not None
+        assert amount.value == "123.450"
+        assert amount.confirmation == "UNCONFIRMED"
+        assert session.scalar(select(Determination)) is None
+
+
+def test_changed_ocr_supersedes_approval_and_rechecks(
+    signed_client: TestClient,  # noqa: F811
+) -> None:
+    created = _run(signed_client, "case1", "case1-ocr")
+    purchase_id = created["purchase_id"]
+    detail = signed_client.get(f"/api/v1/purchases/{purchase_id}").json()
+    assert detail["facts_version"] == 1
+    determination = detail["determinations"][0]
+    approved = signed_client.post(
+        f"/api/v1/determinations/{determination['id']}/review",
+        json={
+            "action": "approve",
+            "approval_path": "LIABILITY",
+            "reason": "Reviewed the engine result",
+            "expected_version": determination["version"],
+        },
+        headers=_headers("approve-ocr"),
+    )
+    assert approved.status_code == 200, approved.text
+    ctx = signed_client.app.state.ctx
+    ctx.ramp.receipts["evt_case1"]["ocr"]["taxes"][0]["tax_amount"] = "10.00"
+    cleared = _send(
+        signed_client, "evt-cleared-ocr", "transactions.cleared", "evt_case1"
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["source"] == "simulated Ramp webhook"
+    assert poll_once(ctx) == 1
+    assert poll_once(ctx) == 1
+    detail = signed_client.get(f"/api/v1/purchases/{purchase_id}").json()
+    assert detail["facts_version"] == 2
+    assert detail["queue"] == "held"
+    assert detail["holds"][0]["named_fact"] == "tax_charged"
+    assert detail["determinations"] == []
+    totals = signed_client.get("/api/v1/totals").json()
+    assert totals["approved_liabilities"]["by_jurisdiction"] == []
+    assert totals["approved_liabilities"]["message"] == "No approved liabilities"
+    assert "151.92" not in json.dumps(totals["approved_liabilities"])
+    with ctx.session_factory() as session:
+        purchases = session.scalars(select(Purchase)).all()
+        assert len(purchases) == 1
+        assert purchases[0].id == purchase_id
+        assert purchases[0].ramp_ocr_taxes == "10.00"
+        assert purchases[0].ramp_entity_amount == "1440.00"
+        rows = session.scalars(
+            select(Determination).where(Determination.purchase_id == purchase_id)
+        ).all()
+        assert len(rows) == 1
+        assert rows[0].is_current is False
+        assert rows[0].unit_status == "SUPERSEDED"
+        tax = session.scalar(
+            select(Fact).where(
+                Fact.purchase_id == purchase_id,
+                Fact.field_key == "tax_charged",
+                Fact.is_current.is_(True),
+            )
+        )
+        assert tax is not None
+        assert tax.value == "0.00"
+        assert tax.confirmation == "UNCONFIRMED"
+
+
+def test_unchanged_later_event_keeps_the_approval(
+    signed_client: TestClient,  # noqa: F811
+) -> None:
+    created = _run(signed_client, "case1", "case1-same")
+    purchase_id = created["purchase_id"]
+    detail = signed_client.get(f"/api/v1/purchases/{purchase_id}").json()
+    determination = detail["determinations"][0]
+    approved = signed_client.post(
+        f"/api/v1/determinations/{determination['id']}/review",
+        json={
+            "action": "approve",
+            "approval_path": "LIABILITY",
+            "reason": "Reviewed the engine result",
+            "expected_version": determination["version"],
+        },
+        headers=_headers("approve-same"),
+    )
+    assert approved.status_code == 200, approved.text
+    ctx = signed_client.app.state.ctx
+    cleared = _send(
+        signed_client, "evt-cleared-same", "transactions.cleared", "evt_case1"
+    )
+    assert cleared.status_code == 200
+    assert poll_once(ctx) == 1
+    assert poll_once(ctx) == 0
+    detail = signed_client.get(f"/api/v1/purchases/{purchase_id}").json()
+    assert detail["facts_version"] == 1
+    assert detail["queue"] == "decided"
+    totals = signed_client.get("/api/v1/totals").json()
+    assert totals["approved_liabilities"]["by_jurisdiction"] == [
+        {
+            "jurisdiction": "WA",
+            "period": "2026Q4",
+            "total": {"value": "151.92", "currency": "USD"},
+            "line_count": 1,
+        }
+    ]
 
 
 def test_fetch_recovers_from_persisted_input_after_restart(
