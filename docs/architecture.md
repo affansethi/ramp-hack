@@ -33,11 +33,11 @@ Startup mode guards: the app refuses to start unless `DATA_MODE=synthetic` and `
 | `app/adapters/extractor.py` | `DocumentExtractor`: Call A (extraction) and Call B (category + question drafts); providers `openai`/`anthropic`/`google`/`replay`; cache keyed by document hash + provider + model + prompt + schema version | Two bounded calls per document; 45 s timeout, two retries, then human fact entry; values exactly as printed, nulls for missing; "no tax line" ≠ "tax line of 0.00" |
 | `app/adapters/engine.py` | `TaxEngine`: one request per line × jurisdiction; effective-date rule selection from `rules/`; returns SUPPORTED (treatment, expected tax, adjustment amount, optional direction, rule reference, rate, location code), UNSUPPORTED (no amount) or ERROR | Coverage only what reviewed `rules/` entries state; never emits an amount without a reviewed rule/rate reference; placeholder/unreviewed entries route NHR |
 | `app/adapters/ramp.py` | Ramp-shaped simulator now, sandbox later via `RAMP_API_BASE`; HMAC-SHA256 verification of `X-Ramp-Signature`; event dedup; fetch transaction/receipt records | Webhook intake stores the event and returns 200; all work happens in the worker |
-| `rules/` | Owner-authored YAML: rule entries (`effective_from/to`, `timing_basis`, `primary_source_url`, `review_status`, `reviewed_by/at`), the S3 required-fact catalog, rate tables | Agents implement the evaluator only; agents never author entries, rates or expected results. Only `reviewed` entries activate; `PLACEHOLDER:` entries stay inactive and route NHR |
-| `fixtures/` | Synthetic documents, owner-signed expected results, model recordings | Synthetic only; agents never record expected results |
+| `rules/` | Verified-content YAML: rule entries (`effective_from/to`, `timing_basis`, `primary_source_url`, `review_status`), the S3 required-fact catalog, rate tables | Agents implement the evaluator only; agents never author entries, rates or expected results. Only `verified` entries activate; `PLACEHOLDER:` entries stay inactive and route NHR |
+| `fixtures/` | Synthetic documents, verified expected results, model recordings | Synthetic only; agents never record expected results |
 
 Pipeline (each stage writes audit events and keys output by immutable input version):
-webhook/import → ingest → fetch → deduplicate → extract (model) → cross-check against Ramp `entity_amount`/`ocr.taxes` (over one cent: unconfirmed) → admit facts (location ladder rungs 1–5, bill-to never confirms use) → classify → hold check against signed S3 → jurisdiction set (undeclared state: whole-item NHR `UNDECLARED_JURISDICTION`) → engine call per line × jurisdiction (never for held/NHR) → response check (missing rule reference/malformed/timeout: determination error, never zero, never NHR-by-default) → review → outputs (journal entry draft, refund letter draft, workpaper lines) from approved current units only.
+webhook/import → ingest → fetch → deduplicate → extract (model) → cross-check against Ramp `entity_amount`/`ocr.taxes` (over one cent: unconfirmed) → admit facts (location ladder rungs 1–5, bill-to never confirms use) → classify → hold check against verified S3 → jurisdiction set (undeclared state: whole-item NHR `UNDECLARED_JURISDICTION`) → engine call per line × jurisdiction (never for held/NHR) → response check (missing rule reference/malformed/timeout: determination error, never zero, never NHR-by-default) → review → outputs (journal entry draft, refund letter draft, workpaper lines) from approved current units only.
 
 ## 3 Data model
 
@@ -46,7 +46,7 @@ Conventions: every org-owned row carries `org_id`; UUID ids; UTC timestamps; sup
 - **Platform:** Organization; Person (seeded demo users, roles viewer/reviewer/setup); Setup (declared jurisdictions CA/WA/NY, period bounds WA 2026-10-01→2026-12-31, basis `invoice_date`); Job (kind, input version, status, `lease_until`, attempts, error code); IdempotencyKey; AuditEvent (actor, command, object + version, before/after hashes).
 - **Intake:** SourceEvent (source, external event id, payload hash, signature result); Purchase (entity, vendor, normalized invoice number, invoice date, item status, Ramp transaction/bill ids — a card charge and a later bill for one invoice make one purchase); PurchaseLine (description, quantity, unit price, gross, discount, net, service period); Document (blob key, SHA-256, MIME, pages).
 - **Facts/evidence:** Fact (subject, field key, value, origin `AI_EXTRACTED`/`HUMAN_SUPPLIED`/`RAMP_RECORD`, source, evidence rung 1–5, confirmation `CONFIRMED`/`UNCONFIRMED`, version, supersedes); Evidence (document, page, exact passage, provenance).
-- **Catalogs:** RequiredFactCatalog (category, required keys, accepted rungs, status candidate/signed, `signed_off_by`); RuleSetEntry; RateRecord (jurisdiction, location, location code, rate, quarter, source URL, review status).
+- **Catalogs:** RequiredFactCatalog (category, required keys, accepted rungs, status candidate/verified, evidence file); RuleSetEntry; RateRecord (jurisdiction, location, location code, rate, quarter, source URL, review status).
 - **Holds/questions:** Hold (purchase, reason `MISSING_REQUIRED_FACT`/`UNCONFIRMED_REQUIRED_FACT`, named fact, active, releasing fact version); Question (hold, fact key, recipient, asked at, answer, state).
 - **Results:** Determination (line, jurisdiction, facts version, rule-set version, label, NHR reason, direction, `derived_direction`, rate, location code, expected tax, engine amount, rule reference, unit status, supersedes); ReviewDecision (determination + version, action, approval path, actor, reason).
 - **Ledgers/outputs:** LiabilityLine (amount copied from engine, approver, approved at); RefundCandidate (amount in question copied; only status `APPROVED_FOR_PURSUIT`, never cash); JournalEntryDraft; RefundLetterDraft (owner-approved basis text; never transmitted).
@@ -105,11 +105,11 @@ docs/                specs, architecture, decisions
 ## 6 Testing strategy
 
 - **Unit tests** (`tests/unit`): domain stages, fact admission (bill-to never confirms; silent ≠ zero; partial seat coverage holds), dedup, supersession.
-- **Rule tests** (`tests/rules`): evaluator against synthetic unit fixtures — liability, refund candidate, no adjustment, UNSUPPORTED/NHR, effective-date selection (Dec 2026 CA selects its signed rule; Jan 2027 routes NHR `RULE_TRANSITION_UNRESOLVED`), two-decimal USD string output.
+- **Rule tests** (`tests/rules`): evaluator against synthetic unit fixtures — liability, refund candidate, no adjustment, UNSUPPORTED/NHR, effective-date selection (Dec 2026 CA selects its verified rule; Jan 2027 routes NHR `RULE_TRANSITION_UNRESOLVED`), two-decimal USD string output.
 - **Gate tests** (`tests/gates`, never-fail, block merge): RG-1 no held/NHR/unreviewed/error unit in any total and held never shown as zero; RG-2 no net/savings/recovered field or copy; RG-3 engine amounts copied exactly (decimal string comparison, no float on money paths); RG-4 every SUPPORTED result has a real reviewed applicable rule/rate reference, placeholders never support approval; RG-5 demo cases 1–7 against the API; RG-6 every citation resolves to an admitted source and every active rule to a reviewed primary-source URL; RG-7 no duplicate effects (duplicate webhook, card + bill, duplicate mark-ready, worker restart with unfinished job); RG-8 no "filed"/"paid" without "simulated"; RG-9 effective dating; H1/H5 enum and endpoint-refusal tests.
 - **API tests** (`tests/api`): cross-org denial, stale-version refusal, idempotency-key behavior.
 - **Eval** (`tests/eval`): replay-mode extraction against golden fixtures; model output never contains rate, tax-decision amount, treatment, label, direction or verdict.
-- **Fixtures:** 20–30 synthetic goldens with owner-signed expected results (RJ extraction, AF engine/state transitions). Agents never record expected results.
+- **Fixtures:** 20–30 synthetic goldens with verified expected results (derived independently by two agents on different lanes and model families). Agents never record expected results.
 - **CI:** one workflow; required checks `test` and `gates`; deploy to App Service only on `main` via OIDC.
 
 ## 7 What to build first
@@ -117,15 +117,15 @@ docs/                specs, architecture, decisions
 Dependency order from Technical Spec v2 §15 (one issue, one PR):
 
 1. **Skeleton + contracts:** FastAPI app serving API + static frontend, managed Postgres (SQLite local-only), durable jobs/worker, closed schemas + golden shapes, deploy workflow green on `/health`. Migrate the existing blob helper into `app/adapters/storage.py`.
-2. **Rule/rate tables + engine** (CA/WA/NY, effective dates) with unit tests — evaluator only; owner signs entries and goldens separately.
-3. **S3 catalog:** RJ drafts, AF signs (gates fact admission and end-to-end supported acceptance only).
+2. **Rule/rate tables + engine** (CA/WA/NY, effective dates) with unit tests — evaluator only; entries and goldens are verified separately under `docs/content-verification.md`.
+3. **S3 catalog:** verified under `docs/content-verification.md` (gates fact admission and end-to-end supported acceptance only).
 4. **DocumentExtractor:** provider interface, strict schema, forbidden-field check, replay cache.
-5. **Fixtures + golden set** (owner-signed expected results for Cases 1–7).
+5. **Fixtures + golden set** (verified expected results for Cases 1–7).
 6. **Ramp simulator + webhook intake** (signature, dedup, fetch) → Case 7 passes.
 7. **Fact admission, OCR cross-check, hold check, jurisdiction set, questions** → Case 6 holds correctly.
 8. **Review queue, approvals, totals, journal-entry and refund-letter drafts** → Cases 1–5 end to end.
 9. **WA Q4 2026 workpaper, mark-ready, export** → RG-1, RG-8.
-10. **Never-fail gates + eval table** → Cases 1–7 match owner-signed outputs in CI.
+10. **Never-fail gates + eval table** → Cases 1–7 match verified outputs in CI.
 11. **Demo hardening:** replay mode, judge interaction (Case 3 → Case 4 fact edit), backup recording.
 
 Never cut: H1–H5; the Case 6 hold; Case 3 approved refund candidate with separate total and DRAFT letter; Case 4 safe unresolved-transition NHR; RG-1–RG-9; DRAFT and SIMULATED labels; labeled replay fallback.

@@ -85,7 +85,7 @@ The hard part is usually the facts, not the arithmetic. Invoices do not say wher
 
 ### 4.1 Facts that matter
 
-Required facts come from the required-fact catalog that the engine-interface owner signs off. AI never authors that catalog. For the demo, the candidate set is:
+Required facts come from the required-fact catalog verified under `docs/content-verification.md`. AI never authors that catalog. For the demo, the candidate set is:
 
 | Fact | Level | Accepted source | Not accepted |
 | :---- | :---- | :---- | :---- |
@@ -164,7 +164,7 @@ Approve is refused for held items, NHR results, stale (superseded) versions, and
 
 ## 6 Seven demo cases and pass/fail gates
 
-Synthetic fixtures, not legal advice. Engine outputs must match owner-reviewed, effective-dated rules and rate records. Figures below are illustrative hand-check targets until AF approves their sources and expected results; placeholders never establish supported tax treatment.
+Synthetic fixtures, not legal advice. Engine outputs must match verified, effective-dated rules and rate records under `docs/content-verification.md`. Figures below are illustrative hand-check targets until their sources and expected results are verified; placeholders never establish supported tax treatment.
 
 ### Case 1 — WA liability
 
@@ -172,15 +172,15 @@ Invoice date 2026-11-15; monthly service 2026-11-01 to 2026-11-30; synthetic Saa
 
 ### Case 2 — CA vs WA
 
-Add a second line with otherwise identical monthly terms and amount, users in San Francisco and \$0 vendor tax. Fixture target, pending AF signoff of CA-RAS-001: CHARGED\_CORRECTLY, no liability. If the rule is not reviewed/signed, show NHR instead; never force the fixture target. Compare with Case 1; requests differ only by line, jurisdiction and location. Show evidence and source-linked rule outputs; approve each separately. Fail: AI tax judgment, unsourced contrast, or non-approved units in totals.
+Add a second line with otherwise identical monthly terms and amount, users in San Francisco and \$0 vendor tax. Fixture target, pending verification of CA-RAS-001 under `docs/content-verification.md`: CHARGED\_CORRECTLY, no liability. If the rule is not verified, show NHR instead; never force the fixture target. Compare with Case 1; requests differ only by line, jurisdiction and location. Show evidence and source-linked rule outputs; approve each separately. Fail: AI tax judgment, unsourced contrast, or non-approved units in totals.
 
 ### Case 3 — CA overcharge
 
-Service period 2026-12-01 to 2026-12-31; invoice date 2026-12-15; monthly SaaS, San Francisco user evidence, price \$962.32 and sourced vendor tax \$83.00. Fixture target after AF signs CA-RAS-001 and the golden: REFUND\_CANDIDATE \$83.00; without reviewed rule, NHR instead. Human approval for pursuit creates its separate total and a DRAFT vendor letter using owner-approved basis text. No letter is sent. Fail: netting, recovery/savings claims, or AI-generated legal conclusions.
+Service period 2026-12-01 to 2026-12-31; invoice date 2026-12-15; monthly SaaS, San Francisco user evidence, price \$962.32 and sourced vendor tax \$83.00. Fixture target after CA-RAS-001 and the golden are verified under `docs/content-verification.md`: REFUND\_CANDIDATE \$83.00; without a verified rule, NHR instead. Human approval for pursuit creates its separate total and a DRAFT vendor letter using owner-approved basis text. No letter is sent. Fail: netting, recovery/savings claims, or AI-generated legal conclusions.
 
 ### Case 4 — Unresolved CA transition
 
-Change Case 3's service period to 2027-01-01 through 2027-01-31; invoice date remains 2026-12-15 for this timing-isolation test. Until the applicable transition rule, rate and handling are reviewed and signed, return NHR RULE\_TRANSITION\_UNRESOLVED, no amount, approval, refund or total contribution. PLACEHOLDER:CA-DP-001 has catalog review\_status=candidate (inactive), illustrative metadata only; PLACEHOLDER: is its identifier prefix, not a result label or a status. Pass: deterministic date change causes the safe NHR stop; model extraction may remain a labeled replay. A supported 2027 verdict requires a separate reviewed rule and newly signed golden, not merely replacing the date.
+Change Case 3's service period to 2027-01-01 through 2027-01-31; invoice date remains 2026-12-15 for this timing-isolation test. Until the applicable transition rule, rate and handling are verified under `docs/content-verification.md`, return NHR RULE\_TRANSITION\_UNRESOLVED, no amount, approval, refund or total contribution. PLACEHOLDER:CA-DP-001 has catalog review\_status=candidate (inactive), illustrative metadata only; PLACEHOLDER: is its identifier prefix, not a result label or a status. Pass: deterministic date change causes the safe NHR stop; model extraction may remain a labeled replay. A supported 2027 verdict requires a separate verified rule and newly verified golden, not merely replacing the date.
 
 ### Case 5 — NY hardware
 

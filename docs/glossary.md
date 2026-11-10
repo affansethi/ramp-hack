@@ -53,7 +53,7 @@ A missing rule reference on an otherwise supported response is a determination e
 
 ## Facts and evidence
 
-**Admitted fact.** A sourced value that has passed the signed required-fact catalog, including any recorded confirmation the catalog requires. It keeps origin, source, evidence rung, and confirmation, and it links to evidence: document, page, exact passage, and provenance. The model only proposes facts. Confidence alone never admits a fact. A model field for rate, tax-decision amount, treatment, label, direction, or a legal conclusion fails with `FORBIDDEN_FIELD`.
+**Admitted fact.** A sourced value that has passed the verified required-fact catalog, including any recorded confirmation the catalog requires. It keeps origin, source, evidence rung, and confirmation, and it links to evidence: document, page, exact passage, and provenance. The model only proposes facts. Confidence alone never admits a fact. A model field for rate, tax-decision amount, treatment, label, direction, or a legal conclusion fails with `FORBIDDEN_FIELD`.
 
 **Fact origin.** Where the value came from. The closed set is `AI_EXTRACTED`, `HUMAN_SUPPLIED`, and `RAMP_RECORD`. Origin records provenance. It is not a tax decision.
 
@@ -73,7 +73,7 @@ The ladder is ordered evidence, not automatic admission. A low-confidence propos
 
 **No tax line.** A null tax-charged value: the document shows no tax line. That is not a tax line of `0.00`. Zero reaches the engine only when a sourced fact shows `0.00` with evidence. When the catalog requires tax charged, a silent invoice holds the item. An assumed zero is not an admitted fact.
 
-**Required-fact catalog (S3).** The signed list of facts each category needs, which sources count, and which rungs are accepted. RJ drafts it and AF signs it. An entry stays `candidate` until it is `signed`. The model never authors the catalog, and neither does an agent. Rule entries use a different active word, `reviewed`, under effective dating. The catalog decides whether facts are complete enough to leave a hold. It is not a taxability ruling. A candidate entry does not admit a fact.
+**Required-fact catalog (S3).** The verified list of facts each category needs, which sources count, and which rungs are accepted. Entries are verified under `docs/content-verification.md`. An entry stays `candidate` until it is `verified`. The model never authors the catalog, and neither does an agent. Rule entries use the same active word, `verified`, under effective dating. The catalog decides whether facts are complete enough to leave a hold. It is not a taxability ruling. A candidate entry does not admit a fact.
 
 **Remote-access SaaS.** Hosted software accessed electronically, with no delivered copy. The category value is `REMOTE_ACCESS_SAAS`. Required facts include delivery method, access model, service period, seat count, and user location by state for every seat. The location ladder above is the SaaS ladder. Classifying a line as SaaS is not a taxability call, and the model may not assume that "SaaS" means no media was delivered.
 
@@ -137,7 +137,7 @@ Needs-human-review and determination errors are counts or lists with reasons, no
 
 **PLACEHOLDER entry.** A rule entry whose id starts with the prefix `PLACEHOLDER:`. The prefix is not a label, not a unit status, and not a third result. The entry stays inactive and illustrative. It cannot support an approval or a total. Placeholder and other unreviewed entries route to NHR with no amount: `RULE_TRANSITION_UNRESOLVED` when the gap is an unresolved transition, otherwise `ENGINE_UNSUPPORTED`.
 
-**Effective dating.** Each rule entry has an effective from and an effective to. The engine picks the entry from those dates and the owner-signed timing basis. The reporting period is chosen separately, by invoice date. Demo SaaS uses monthly service periods. No annual or cross-year timing is inferred. Hardware uses its own reviewed delivery-date rule. Unreviewed timing and an unresolved transition route to NHR `RULE_TRANSITION_UNRESOLVED`, with no amount and no approval. Changing a date does not by itself make a result engine-supported. Only a reviewed entry activates. A `candidate` rule entry is inactive. That is a different word from the required-fact catalog, which is `candidate` until `signed`.
+**Effective dating.** Each rule entry has an effective from and an effective to. The engine picks the entry from those dates and the timing basis verified under `docs/content-verification.md`. The reporting period is chosen separately, by invoice date. Demo SaaS uses monthly service periods. No annual or cross-year timing is inferred. Hardware uses its own verified delivery-date rule. Unverified timing and an unresolved transition route to NHR `RULE_TRANSITION_UNRESOLVED`, with no amount and no approval. Changing a date does not by itself make a result engine-supported. Only a verified entry activates. A `candidate` rule entry is inactive. That is a different status from the required-fact catalog, which is `candidate` until `verified`.
 
 ## Scope and run modes
 
