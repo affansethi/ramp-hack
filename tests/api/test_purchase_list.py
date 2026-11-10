@@ -139,6 +139,7 @@ def _set_determination(
                 id=determination_id,
                 org_id=purchase.org_id,
                 purchase_id=purchase_id,
+                line_id=determination_id,
                 jurisdiction="WA",
                 facts_version=1,
                 ruleset_version="test",

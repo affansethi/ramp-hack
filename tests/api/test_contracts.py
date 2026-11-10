@@ -193,6 +193,7 @@ def _insert_other_org(client: TestClient) -> str:
                 id=determination_id,
                 org_id=org_id,
                 purchase_id=purchase_id,
+                line_id=determination_id,
                 jurisdiction="WA",
                 facts_version=1,
                 ruleset_version="test",
