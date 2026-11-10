@@ -4,6 +4,7 @@ import csv
 import io
 import json
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from hashlib import sha256
 from uuid import uuid4
 
@@ -280,29 +281,23 @@ def collect_totals(session: Session, org_id: str) -> dict[str, object]:
             select(PurchaseLine).where(PurchaseLine.purchase_id == purchase_id)
         ).all():
             held_amount += parse_decimal(line.line_amount)
-    grouped: dict[tuple[str, str], list[str]] = {}
-    refund_rows: list[dict[str, object]] = []
+    grouped: dict[tuple[str, str], Decimal] = {}
+    refund_amount = parse_decimal("0")
+    refund_count = 0
     nhr_count = 0
     error_count = 0
-    unreviewed_by_direction: dict[str, int] = {}
+    unreviewed_count = 0
     for determination in session.scalars(
         select(Determination).where(Determination.org_id == org_id)
     ).all():
-        if (
-            not determination.is_current
-            or determination.purchase_id in held_ids
-            or determination.unit_status in ("REJECTED", "SUPERSEDED")
-        ):
+        if not determination.is_current or determination.purchase_id in held_ids:
             continue
         if determination.unit_status == "DETERMINATION_ERROR":
             error_count += 1
         elif determination.label == "NEEDS_HUMAN_REVIEW":
             nhr_count += 1
         elif determination.unit_status == "READY_FOR_REVIEW":
-            direction = determination.direction or "UNKNOWN"
-            unreviewed_by_direction[direction] = (
-                unreviewed_by_direction.get(direction, 0) + 1
-            )
+            unreviewed_count += 1
         elif (
             determination.unit_status == "APPROVED"
             and determination.direction == "LIABILITY"
@@ -315,74 +310,44 @@ def collect_totals(session: Session, org_id: str) -> dict[str, object]:
             if liability is None:
                 continue
             key = (liability.jurisdiction, liability.period)
-            grouped.setdefault(key, []).append(liability.amount)
+            previous = grouped.get(key, parse_decimal("0"))
+            grouped[key] = previous + parse_decimal(liability.amount)
         elif determination.unit_status == "APPROVED_FOR_PURSUIT":
             refund = session.scalar(
                 select(RefundCandidate).where(
                     RefundCandidate.determination_id == determination.id
                 )
             )
-            if refund is None or refund.status != "APPROVED_FOR_PURSUIT":
+            if refund is None:
                 continue
-            purchase = session.get(Purchase, refund.purchase_id)
-            letter = session.scalar(
-                select(RefundLetterDraft).where(
-                    RefundLetterDraft.determination_id == determination.id
-                )
-            )
-            refund_rows.append(
-                {
-                    "determination_id": determination.id,
-                    "purchase_id": refund.purchase_id,
-                    "vendor": purchase.vendor if purchase is not None else "",
-                    "amount": {"value": refund.amount, "currency": "USD"},
-                    "refund_letter_id": letter.id if letter is not None else None,
-                }
-            )
-    groups = []
-    for (jurisdiction, period), amounts in sorted(grouped.items()):
-        total = sum((parse_decimal(value) for value in amounts), parse_decimal("0"))
-        groups.append(
-            {
-                "jurisdiction": jurisdiction,
-                "period": period,
-                "total": {"value": f"{total:.2f}", "currency": "USD"},
-                "line_count": len(amounts),
-            }
-        )
-    refund_total = parse_decimal("0")
-    for row in refund_rows:
-        amount = row["amount"]
-        if isinstance(amount, dict):
-            refund_total += parse_decimal(str(amount["value"]))
-    held: dict[str, object] = {
-        "count": len(held_ids),
-        "label": "purchase amount, not tax",
-    }
-    if held_ids:
-        held["purchase_amount"] = {"value": f"{held_amount:.2f}", "currency": "USD"}
+            refund_amount += parse_decimal(refund.amount)
+            refund_count += 1
+    groups = [
+        {
+            "jurisdiction": jurisdiction,
+            "period": period,
+            "amount": {"value": f"{amount:.2f}", "currency": "USD"},
+        }
+        for (jurisdiction, period), amount in sorted(grouped.items())
+    ]
     return {
-        "approved_liabilities": {
-            "by_jurisdiction": groups,
-            "message": None if groups else "No approved liabilities",
-        },
+        "approved_liabilities": groups,
+        "approved_liabilities_message": None if groups else "No approved liabilities",
         "refund_candidates": {
+            "count": refund_count,
             "label": "not recovered cash",
-            "count": len(refund_rows),
-            "total": None
-            if not refund_rows
-            else {"value": f"{refund_total:.2f}", "currency": "USD"},
-            "rows": refund_rows,
+            "amount": None
+            if refund_count == 0
+            else {"value": f"{refund_amount:.2f}", "currency": "USD"},
         },
-        "held": held,
-        "open_needs_human_review": {"count": nhr_count},
-        "determination_errors": {"count": error_count},
-        "unreviewed": {
-            "by_direction": [
-                {"direction": direction, "count": count}
-                for direction, count in sorted(unreviewed_by_direction.items())
-            ]
+        "held": {
+            "count": len(held_ids),
+            "purchase_amount": {"value": f"{held_amount:.2f}", "currency": "USD"},
+            "note": "purchase amount, not tax",
         },
+        "needs_human_review_count": nhr_count,
+        "error_count": error_count,
+        "unreviewed_count": unreviewed_count,
     }
 
 
