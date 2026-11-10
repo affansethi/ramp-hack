@@ -48,7 +48,7 @@ class RampSimulator:
 
     def fetch(
         self, event_type: str, object_id: str, receipt_id: str | None
-    ) -> dict[str, str | None]:
+    ) -> dict[str, Any]:
         records = self.bills if event_type == "bills.created" else self.transactions
         record = records[object_id]
         receipt_ids = [receipt_id] if receipt_id else record.get("receipts", [])
@@ -66,6 +66,18 @@ class RampSimulator:
             if taxes
             else None
         )
+        merchant = record.get("merchant_location") or {}
+        holder = record.get("card_holder") or {}
+        receipt_items = (record.get("merchant_data") or {}).get("receipt") or []
+        ocr_lines = [
+            line
+            for rid in receipt_ids
+            for line in self.receipts.get(rid, {}).get("ocr", {}).get("line_items", [])
+        ]
+        mismatch = bool(merchant) and bool(holder.get("location_name")) and (
+            str(merchant.get("state") or "")
+            != str(holder.get("location_name") or "").split(",")[-1].strip()
+        )
         return dict(
             entity_amount=record["entity_amount"],
             currency_code=record["currency_code"],
@@ -75,4 +87,9 @@ class RampSimulator:
                 "invoice_date", record.get("user_transaction_time", "")[:10]
             ),
             ocr_taxes=total,
+            receipt_items=receipt_items,
+            ocr_line_items=ocr_lines,
+            card_holder=holder.get("location_name"),
+            merchant_location_mismatch=mismatch,
+            bill_to=record.get("bill_to"),
         )

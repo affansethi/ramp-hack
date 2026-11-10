@@ -86,10 +86,13 @@ def test_fetch_only_in_worker(
         )
         assert purchase.category is None
         assert not session.scalars(
-            select(Fact).where(
-                Fact.field_key.in_(["user_location", "category", "rate"])
-            )
+            select(Fact).where(Fact.field_key.in_(["category", "rate"]))
         ).all()
+        for fact in session.scalars(
+            select(Fact).where(Fact.field_key == "user_location")
+        ).all():
+            assert fact.confirmation == "UNCONFIRMED"
+            assert fact.evidence_rung == 5
     assert _send(client, "evt-fetch", kind, "synthetic-id").json() == response.json()
 
 

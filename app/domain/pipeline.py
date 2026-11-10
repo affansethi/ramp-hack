@@ -4,6 +4,7 @@ import json
 from dataclasses import asdict, dataclass, replace
 from datetime import date
 from hashlib import sha256
+from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -233,7 +234,7 @@ def ingest_webhook(
 
 
 def ingest_fetched_record(
-    session: Session, job: Job, record: dict[str, str | None]
+    session: Session, job: Job, record: dict[str, Any]
 ) -> None:
     event = session.get(SourceEvent, job.id)
     if event is None:
@@ -323,6 +324,13 @@ def ingest_fetched_record(
     if result.purchase_id is not None:
         for other in ambiguous:
             _record_ambiguous(session, job.org_id, result.purchase_id, other.id)
+        if scenario is None:
+            purchase = session.get(Purchase, result.purchase_id)
+            document = session.scalar(
+                select(Document).where(Document.purchase_id == result.purchase_id)
+            )
+            if purchase is not None and document is not None:
+                _store_ramp_receipt_fields(session, purchase, document, record)
 
 
 def advance_purchase(session: Session, purchase_id: str, ruleset: Ruleset) -> None:
@@ -661,6 +669,88 @@ def _write_facts(
                 None,
                 f"Shipping printed as {incoming.shipping}",
             )
+
+
+def _store_ramp_receipt_fields(
+    session: Session,
+    purchase: Purchase,
+    document: Document,
+    record: dict[str, Any],
+) -> None:
+    for item in record.get("receipt_items") or []:
+        if not isinstance(item, dict):
+            continue
+        amount = item.get("amount") or item.get("total")
+        if not isinstance(amount, str):
+            continue
+        parse_decimal(amount)
+        _add_fact(
+            session,
+            purchase,
+            document,
+            None,
+            "line_amount",
+            amount,
+            "CONFIRMED",
+            None,
+            f"Ramp receipt amount {amount}",
+        )
+    for item in record.get("ocr_line_items") or []:
+        if not isinstance(item, dict):
+            continue
+        tax = item.get("tax_amount") or item.get("tax")
+        if not isinstance(tax, str):
+            continue
+        parse_decimal(tax)
+        _add_fact(
+            session,
+            purchase,
+            document,
+            None,
+            "tax_charged",
+            tax,
+            "CONFIRMED",
+            None,
+            f"Ramp OCR tax {tax}",
+        )
+    holder = record.get("card_holder")
+    if isinstance(holder, str) and holder.strip():
+        _add_fact(
+            session,
+            purchase,
+            document,
+            None,
+            "user_location",
+            holder.strip(),
+            "UNCONFIRMED",
+            5,
+            "card_holder is rung 5 and does not confirm use",
+        )
+    if record.get("merchant_location_mismatch"):
+        _add_fact(
+            session,
+            purchase,
+            document,
+            None,
+            "merchant_location_mismatch",
+            "true",
+            "UNCONFIRMED",
+            None,
+            "Merchant-location mismatch is a flag only, not a location fact",
+        )
+    bill_to = record.get("bill_to")
+    if isinstance(bill_to, str) and bill_to.strip():
+        _add_fact(
+            session,
+            purchase,
+            document,
+            None,
+            "bill_to",
+            bill_to.strip(),
+            "UNCONFIRMED",
+            None,
+            "Bill-to is context only and does not confirm use or delivery.",
+        )
 
 
 def _add_fact(
