@@ -660,6 +660,11 @@ def _approve_refund(
     )
 
 
+_REFUND_LETTER_BASIS: dict[tuple[str, str | None], str] = {
+    ("CA", "REMOTE_ACCESS_SAAS"): "ca_saas_vendor_tax"
+}
+
+
 def _filing_basis_text(
     rules_dir: str, purchase: Purchase, determination: Determination
 ) -> str:
@@ -676,11 +681,12 @@ def _filing_basis_text(
             continue
         if current and line and not line.startswith("#"):
             sections[current].append(line)
-    key = "ca_saas_vendor_tax"
-    if determination.jurisdiction == "NY":
-        key = "ny_hardware_use_tax"
-    elif determination.jurisdiction == "WA":
-        key = "wa_use_tax_journal"
+    # Only a basis written for a vendor refund letter may enter one. The NY form
+    # note and the WA journal note serve other drafts, so a refund in those
+    # states keeps an empty basis and the unsigned note.
+    key = _REFUND_LETTER_BASIS.get((determination.jurisdiction, purchase.category))
+    if key is None:
+        return ""
     text = " ".join(sections.get(key, []))
     banned = ("was sent", "letter was sent")
     if any(phrase in text.lower() for phrase in banned):
