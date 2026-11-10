@@ -55,6 +55,9 @@ def signed_client(tmp_path: Path) -> TestClient:
     with TestClient(app) as client:
         login = client.post("/api/v1/demo/login", json={}, headers=_headers("login"))
         assert login.status_code == 200
+        token = login.json().get("csrf_token")
+        if token:
+            client.headers["X-CSRF-Token"] = token
         yield client
 
 
@@ -113,15 +116,18 @@ def test_signed_case_1_approves_the_engine_string(signed_client: TestClient) -> 
     )
     assert approved.status_code == 200, approved.text
     totals = signed_client.get("/api/v1/totals").json()
-    assert totals["approved_liabilities"] == [
+    engine = determination["engine_amount"]["value"]
+    assert totals["approved_liabilities"]["by_jurisdiction"] == [
         {
             "jurisdiction": "WA",
             "period": "2026Q4",
-            "amount": {"value": "151.92", "currency": "USD"},
+            "total": {"value": engine, "currency": "USD"},
+            "line_count": 1,
         }
     ]
+    assert totals["approved_liabilities"]["message"] is None
     assert "savings" not in totals
-    assert "recovered" not in totals["approved_liabilities"][0]
+    assert "recovered" not in json.dumps(totals)
 
 
 def test_case_6_holds_for_location_and_stays_out_of_totals(
@@ -136,7 +142,9 @@ def test_case_6_holds_for_location_and_stays_out_of_totals(
     assert detail["purchase_amount_note"] == "purchase amount, not tax"
     totals = signed_client.get("/api/v1/totals").json()
     assert totals["held"]["count"] == 1
-    assert totals["approved_liabilities_message"] == "No approved liabilities"
+    assert totals["held"]["label"] == "purchase amount, not tax"
+    assert totals["approved_liabilities"]["message"] == "No approved liabilities"
+    assert "0.00" not in json.dumps(totals["approved_liabilities"])
 
 
 def test_case_4_is_unresolved_transition_with_no_amount(

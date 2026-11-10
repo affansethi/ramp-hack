@@ -10,7 +10,15 @@ from app.config import Settings
 from app.contracts.determination import DeterminationRead
 from app.contracts.money import Money
 from app.domain.moneyutil import money_json, parse_decimal
-from app.models import Determination, Fact, Hold, Purchase, PurchaseLine, Question
+from app.models import (
+    Determination,
+    Fact,
+    Hold,
+    Purchase,
+    PurchaseLine,
+    Question,
+    RefundLetterDraft,
+)
 
 _PROMPTS = {
     "user_location": "Send a seat export or a named answer for seat location.",
@@ -147,7 +155,9 @@ def purchase_detail(
             for question in questions
         ],
         "determinations": [
-            _determination_json(row) for row in determinations if row.is_current
+            _determination_json(row, session)
+            for row in determinations
+            if row.is_current
         ],
         "actions": _actions(queue),
     }
@@ -208,8 +218,17 @@ def _stored_object(raw: str | None) -> dict[str, Any] | None:
     return {str(key): value for key, value in loaded.items()}
 
 
-def _determination_json(row: Determination) -> dict[str, object]:
+def _determination_json(
+    row: Determination, session: Session | None = None
+) -> dict[str, object]:
     supported = row.label == "ENGINE_SUPPORTED"
+    letter = None
+    if session is not None:
+        letter = session.scalar(
+            select(RefundLetterDraft).where(
+                RefundLetterDraft.determination_id == row.id
+            )
+        )
     body = DeterminationRead(
         id=row.id,
         line_id=row.line_id,
@@ -231,6 +250,7 @@ def _determination_json(row: Determination) -> dict[str, object]:
         error_code=row.error_code,
         engine_request=_stored_object(row.engine_request),
         engine_response=_stored_object(row.engine_response),
+        refund_letter_id=letter.id if letter is not None else None,
     )
     return cast(dict[str, object], body.model_dump(mode="json"))
 
