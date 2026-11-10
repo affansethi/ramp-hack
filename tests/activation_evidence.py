@@ -7,7 +7,7 @@ from pathlib import Path
 import yaml
 
 from app.domain.content_verification import evidence_stem, substantive_values
-from app.domain.ruleset import is_placeholder, rate_item_id
+from app.domain.ruleset import catalog_item_id, is_placeholder, rate_item_id
 
 SNAPSHOT_REL = "snapshots/activation.txt"
 SNAPSHOT_TEXT = "Header\nSynthetic quoted\nsentence for verification.\nFooter\n"
@@ -58,6 +58,14 @@ def write_item_evidence(
         digest if digest is not None else sha256(snapshot.read_bytes()).hexdigest()
     )
     source_authority = authority or ("rate_table" if kind == "rate" else "statute")
+    claim_fields = {
+        "rule": "treatment",
+        "rate": "rate",
+        "rounding": "mode",
+        "catalog": "required_keys",
+        "basis": "text",
+        "golden": "expected",
+    }
     attestations: list[dict[str, object]] = [
         _attestation("research", lanes[0], models[0]),
     ]
@@ -67,7 +75,7 @@ def write_item_evidence(
         "item": item_id,
         "claims": [
             {
-                "field": "rate" if kind == "rate" else "treatment",
+                "field": claim_fields.get(kind, "treatment"),
                 "value": "synthetic",
                 "sources": [
                     {
@@ -94,7 +102,7 @@ def write_item_evidence(
 
 
 def stamp_verified_ruleset(rules_dir: Path, allowlist_source: Path) -> None:
-    """Attach passing synthetic evidence to verified rules and rates."""
+    """Attach passing synthetic evidence to agent-verified rules, rates and catalog."""
     evidence = rules_dir / "evidence"
     evidence.mkdir(parents=True, exist_ok=True)
     target = evidence / "allowlist.yaml"
@@ -116,6 +124,13 @@ def stamp_verified_ruleset(rules_dir: Path, allowlist_source: Path) -> None:
         "rate",
         "https://dor.wa.gov/synthetic-activation",
     )
+    _stamp_file(
+        rules_dir,
+        "catalog.yaml",
+        "entries",
+        "catalog",
+        "https://dor.wa.gov/synthetic-activation",
+    )
 
 
 def _stamp_file(rules_dir: Path, filename: str, key: str, kind: str, url: str) -> None:
@@ -129,7 +144,7 @@ def _stamp_file(rules_dir: Path, filename: str, key: str, kind: str, url: str) -
     if not isinstance(rows, list):
         return
     for row in rows:
-        if not isinstance(row, dict) or row.get("review_status") != "verified":
+        if not isinstance(row, dict) or not _is_agent_row(kind, row):
             continue
         values = {str(field): value for field, value in row.items()}
         item_id = _item_id(kind, values)
@@ -138,10 +153,25 @@ def _stamp_file(rules_dir: Path, filename: str, key: str, kind: str, url: str) -
         write_item_evidence(rules_dir, item_id, values, kind=kind, url=url)
 
 
+def _is_agent_row(kind: str, row: dict[str, object]) -> bool:
+    if kind == "catalog":
+        return (
+            row.get("status") == "signed"
+            and row.get("signed_off_by") == "agent-verified"
+        )
+    return (
+        row.get("review_status") == "reviewed"
+        and row.get("reviewed_by") == "agent-verified"
+    )
+
+
 def _item_id(kind: str, values: Mapping[str, object]) -> str | None:
     if kind == "rule":
         rule_id = values.get("id")
         return rule_id if isinstance(rule_id, str) else None
+    if kind == "catalog":
+        category = values.get("category")
+        return catalog_item_id(category) if isinstance(category, str) else None
     jurisdiction = values.get("jurisdiction")
     location_code = values.get("location_code")
     quarter = values.get("quarter")

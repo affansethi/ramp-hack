@@ -1,8 +1,10 @@
 """Agent verification checks for tax content.
 
-An item marked verified is active only when this module's checks pass.
-`make verify-content` fails the tree when any such item is short of the
-protocol in docs/content-verification.md. Candidate items are ignored.
+An item marked agent-verified is active only when this module's checks
+pass. `make verify-content` fails the tree when any such item is short of
+the protocol in docs/content-verification.md. Candidate items are ignored,
+and owner-reviewed items need no evidence (a present evidence file must
+still parse). `PLACEHOLDER:` ids never activate.
 """
 
 from collections.abc import Mapping
@@ -14,7 +16,16 @@ from urllib.parse import urlparse
 
 import yaml
 
-from app.domain.ruleset import catalog_item_id, is_placeholder, rate_item_id
+from app.domain.ruleset import (
+    basis_item_id,
+    catalog_item_id,
+    golden_item_id,
+    is_agent_verified,
+    is_owner,
+    is_placeholder,
+    rate_item_id,
+    rounding_item_id,
+)
 
 _METADATA = frozenset(
     {
@@ -51,6 +62,8 @@ class _Item:
     item_id: str
     kind: str
     values: dict[str, object]
+    agent: bool
+    """True when reviewed_by/signed_off_by is agent-verified."""
 
 
 def model_family(model: str) -> str:
@@ -105,9 +118,12 @@ def verify_content(root: Path) -> list[str]:
                 )
             )
             continue
-        errors.extend(
-            _check_item(rules_dir, root / "fixtures" / "goldens", item, domains)
-        )
+        if item.agent:
+            errors.extend(
+                _check_item(rules_dir, root / "fixtures" / "goldens", item, domains)
+            )
+        else:
+            errors.extend(_check_owner_evidence(rules_dir / "evidence", item))
     return errors
 
 
@@ -118,7 +134,7 @@ def evidence_passes(
     *,
     kind: str,
 ) -> bool:
-    """True when one verified rule or rate has passing evidence."""
+    """True when one agent-verified item has passing gate evidence."""
     if is_placeholder(item_id):
         return False
     allow_path = rules_dir / "evidence" / "allowlist.yaml"
@@ -127,10 +143,25 @@ def evidence_passes(
     domains, allow_errors = _load_allowlist(allow_path)
     if allow_errors:
         return False
-    item = _Item(item_id=item_id, kind=kind, values=dict(values))
+    item = _Item(item_id=item_id, kind=kind, values=dict(values), agent=True)
     return not _check_item(
         rules_dir, rules_dir.parent / "fixtures" / "goldens", item, domains
     )
+
+
+def _check_owner_evidence(evidence_dir: Path, item: _Item) -> list[str]:
+    """Owner-reviewed items need no evidence. A present file must parse."""
+    path = _evidence_file(evidence_dir, item.item_id)
+    if path is None:
+        return [
+            _err("EVIDENCE_SCHEMA", item.item_id, "item id is not a safe file name")
+        ]
+    if not path.is_file():
+        return []
+    _loaded, parse_error = _load_yaml(path)
+    if parse_error is not None:
+        return [_err("EVIDENCE_PARSE", item.item_id, parse_error)]
+    return []
 
 
 def _check_item(
@@ -141,7 +172,7 @@ def _check_item(
 ) -> list[str]:
     errors, verify_lanes = _check_evidence(rules_dir / "evidence", item, domains)
     errors.extend(_check_verifier(rules_dir / "evidence", item, verify_lanes))
-    if item.kind == "golden":
+    if item.kind == "golden" and item.agent:
         errors.extend(_check_derivations(goldens_dir, item))
     return errors
 
@@ -532,7 +563,7 @@ def _check_derivations(goldens_dir: Path, item: _Item) -> list[str]:
             _err(
                 "GOLDEN_DERIVATIONS",
                 item.item_id,
-                "verified golden needs two derivation files",
+                "agent-verified golden needs two derivation files",
             )
         ]
     prefix = fixture_id + "."
@@ -548,7 +579,7 @@ def _check_derivations(goldens_dir: Path, item: _Item) -> list[str]:
             _err(
                 "GOLDEN_DERIVATIONS",
                 item.item_id,
-                "verified golden needs two derivation files",
+                "agent-verified golden needs two derivation files",
             )
         ]
     expected = _expected_payload(item.values)
@@ -628,6 +659,9 @@ def _scan(root: Path) -> tuple[list[_Item], list[str]]:
     found, scan_errors = _scan_rates(rules_dir / "rates.yaml")
     items.extend(found)
     errors.extend(scan_errors)
+    found, scan_errors = _scan_rounding(rules_dir / "rounding.yaml")
+    items.extend(found)
+    errors.extend(scan_errors)
     found, scan_errors = _scan_catalog(rules_dir / "catalog.yaml")
     items.extend(found)
     errors.extend(scan_errors)
@@ -640,19 +674,34 @@ def _scan(root: Path) -> tuple[list[_Item], list[str]]:
     return items, errors
 
 
+def _selected(
+    row: Mapping[str, object], status_key: str, by_key: str, status_value: str
+) -> tuple[bool, bool]:
+    """Selected rows are owner-reviewed or agent-verified. Returns (selected, agent)."""
+    if row.get(status_key) != status_value:
+        return False, False
+    by = row.get(by_key)
+    if is_agent_verified(by):
+        return True, True
+    if is_owner(by):
+        return True, False
+    return False, False
+
+
 def _scan_rules(path: Path) -> tuple[list[_Item], list[str]]:
     rows, errors = _rows(path, "rules")
     items: list[_Item] = []
     for row in rows:
-        if row.get("review_status") != "verified":
+        selected, agent = _selected(row, "review_status", "reviewed_by", "reviewed")
+        if not selected:
             continue
         rule_id = row.get("id")
         if not isinstance(rule_id, str) or not rule_id.strip():
             errors.append(
-                _err("CONTENT_PARSE", path.name, "verified rule is missing an id")
+                _err("CONTENT_PARSE", path.name, "reviewed rule is missing an id")
             )
             continue
-        items.append(_Item(rule_id.strip(), "rule", row))
+        items.append(_Item(rule_id.strip(), "rule", row, agent))
     return items, errors
 
 
@@ -660,7 +709,8 @@ def _scan_rates(path: Path) -> tuple[list[_Item], list[str]]:
     rows, errors = _rows(path, "rates")
     items: list[_Item] = []
     for row in rows:
-        if row.get("review_status") != "verified":
+        selected, agent = _selected(row, "review_status", "reviewed_by", "reviewed")
+        if not selected:
             continue
         jurisdiction = row.get("jurisdiction")
         location_code = row.get("location_code")
@@ -674,20 +724,47 @@ def _scan_rates(path: Path) -> tuple[list[_Item], list[str]]:
                 _err(
                     "CONTENT_PARSE",
                     path.name,
-                    "verified rate is missing identity fields",
+                    "reviewed rate is missing identity fields",
                 )
             )
             continue
         item_id = rate_item_id(jurisdiction, location_code, quarter)
-        items.append(_Item(item_id, "rate", row))
+        items.append(_Item(item_id, "rate", row, agent))
     return items, errors
+
+
+def _scan_rounding(path: Path) -> tuple[list[_Item], list[str]]:
+    if not path.exists():
+        return [], []
+    loaded, parse_error = _load_yaml(path)
+    if parse_error is not None:
+        return [], [_err("CONTENT_PARSE", path.name, parse_error)]
+    doc = _as_dict(loaded)
+    if doc is None:
+        return [], [_err("CONTENT_PARSE", path.name, "must be a mapping")]
+    raw = doc.get("rounding")
+    if raw is None:
+        return [], []
+    row = _as_dict(raw)
+    if row is None:
+        return [], [_err("CONTENT_PARSE", path.name, "rounding must be a mapping")]
+    selected, agent = _selected(row, "review_status", "reviewed_by", "reviewed")
+    if not selected:
+        return [], []
+    rounding_id = row.get("id")
+    if not isinstance(rounding_id, str) or not rounding_id.strip():
+        return [], [
+            _err("CONTENT_PARSE", path.name, "reviewed rounding is missing an id")
+        ]
+    return [_Item(rounding_item_id(rounding_id.strip()), "rounding", row, agent)], []
 
 
 def _scan_catalog(path: Path) -> tuple[list[_Item], list[str]]:
     rows, errors = _rows(path, "entries")
     items: list[_Item] = []
     for row in rows:
-        if row.get("status") != "verified":
+        selected, agent = _selected(row, "status", "signed_off_by", "signed")
+        if not selected:
             continue
         category = row.get("category")
         if not isinstance(category, str) or not category.strip():
@@ -695,11 +772,11 @@ def _scan_catalog(path: Path) -> tuple[list[_Item], list[str]]:
                 _err(
                     "CONTENT_PARSE",
                     path.name,
-                    "verified catalog entry is missing a category",
+                    "signed catalog entry is missing a category",
                 )
             )
             continue
-        items.append(_Item(catalog_item_id(category.strip()), "catalog", row))
+        items.append(_Item(catalog_item_id(category.strip()), "catalog", row, agent))
     return items, errors
 
 
@@ -709,17 +786,16 @@ def _scan_basis(path: Path) -> tuple[list[_Item], list[str]]:
     rows, errors = _rows(path, "entries")
     items: list[_Item] = []
     for row in rows:
-        if row.get("status") != "verified":
+        selected, agent = _selected(row, "status", "signed_off_by", "signed")
+        if not selected:
             continue
         basis_id = row.get("id")
         if not isinstance(basis_id, str) or not basis_id.strip():
             errors.append(
-                _err(
-                    "CONTENT_PARSE", path.name, "verified filing basis is missing an id"
-                )
+                _err("CONTENT_PARSE", path.name, "signed filing basis is missing an id")
             )
             continue
-        items.append(_Item(f"basis-{basis_id.strip()}", "basis", row))
+        items.append(_Item(basis_item_id(basis_id.strip()), "basis", row, agent))
     return items, errors
 
 
@@ -741,12 +817,15 @@ def _scan_goldens(path: Path) -> tuple[list[_Item], list[str]]:
             errors.append(_err("CONTENT_PARSE", golden.name, parse_error))
             continue
         doc = _as_dict(loaded)
-        if doc is None or doc.get("status") != "verified":
+        if doc is None:
+            continue
+        selected, agent = _selected(doc, "status", "signed_off_by", "signed")
+        if not selected:
             continue
         fixture_id = doc.get("id")
         if not isinstance(fixture_id, str) or not fixture_id.strip():
             fixture_id = golden.stem
-        items.append(_Item(f"golden-{fixture_id.strip()}", "golden", doc))
+        items.append(_Item(golden_item_id(fixture_id.strip()), "golden", doc, agent))
     return items, errors
 
 

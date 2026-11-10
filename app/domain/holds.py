@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 
 from app.domain.moneyutil import parse_decimal
-from app.domain.ruleset import CatalogEntry, catalog_is_verified
+from app.domain.ruleset import CatalogEntry, catalog_is_signed
 
 DECLARED = frozenset({"CA", "WA", "NY"})
 
@@ -28,7 +28,7 @@ def decide_hold(
     verified = [
         entry
         for entry in catalog
-        if entry.category == category and catalog_is_verified(entry)
+        if entry.category == category and catalog_is_signed(entry)
     ]
     if not verified:
         return HoldDecision("UNCONFIRMED_REQUIRED_FACT", "required_fact_catalog")

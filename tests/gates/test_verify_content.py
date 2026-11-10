@@ -10,7 +10,7 @@ from app.domain.content_verification import (
     verify_content,
 )
 from app.domain.ruleset import (
-    catalog_is_verified,
+    catalog_is_signed,
     load_ruleset,
     rate_is_active,
     rule_is_active,
@@ -19,13 +19,18 @@ from tests.activation_evidence import dump_yaml, write_item_evidence
 
 ROOT = Path(__file__).resolve().parents[2]
 RULE_URL = "https://laws.statute.test/section/1"
+AGENT = "agent-verified"
 
 
 def _codes(errors: list[str]) -> set[str]:
     return {error.split(":", 1)[0] for error in errors}
 
 
-def _rule(rule_id: str = "SYN-1", review_status: str = "verified") -> dict[str, object]:
+def _rule(
+    rule_id: str = "SYN-1",
+    review_status: str = "reviewed",
+    reviewed_by: str | None = AGENT,
+) -> dict[str, object]:
     return {
         "id": rule_id,
         "jurisdiction": "ZZ",
@@ -38,12 +43,12 @@ def _rule(rule_id: str = "SYN-1", review_status: str = "verified") -> dict[str, 
         "timing_basis": "invoice_date",
         "primary_source_url": RULE_URL,
         "review_status": review_status,
-        "reviewed_by": None,
-        "reviewed_at": None,
+        "reviewed_by": reviewed_by,
+        "reviewed_at": "2026-01-01" if reviewed_by else None,
     }
 
 
-def _rate() -> dict[str, object]:
+def _rate(reviewed_by: str | None = AGENT) -> dict[str, object]:
     return {
         "jurisdiction": "ZZ",
         "location": "Synthetic City",
@@ -51,8 +56,8 @@ def _rate() -> dict[str, object]:
         "rate": "0.1000",
         "quarter": "2026Q4",
         "source_url": "https://laws.statute.test/rates",
-        "review_status": "verified",
-        "reviewed_by": None,
+        "review_status": "reviewed",
+        "reviewed_by": reviewed_by,
     }
 
 
@@ -98,15 +103,35 @@ def test_passing_rule_activates(tmp_path: Path) -> None:
     assert verify_content(root) == []
     loaded = load_ruleset(root / "rules")
     assert rule_is_active(loaded.rules[0])
-    assert loaded.rules[0].review_status == "verified"
+    assert loaded.rules[0].review_status == "reviewed"
     assert values["id"] == "SYN-1"
 
 
 def test_candidate_needs_no_evidence(tmp_path: Path) -> None:
     root = tmp_path
-    _write_rules(root, {"rules": [_rule(review_status="candidate")]}, "entries.yaml")
+    _write_rules(
+        root,
+        {"rules": [_rule(review_status="candidate", reviewed_by=None)]},
+        "entries.yaml",
+    )
     assert verify_content(root) == []
     assert not rule_is_active(load_ruleset(root / "rules").rules[0])
+
+
+def test_owner_reviewed_rule_without_evidence_passes(tmp_path: Path) -> None:
+    root = tmp_path
+    _write_rules(root, {"rules": [_rule(reviewed_by="AF")]}, "entries.yaml")
+    assert verify_content(root) == []
+    assert rule_is_active(load_ruleset(root / "rules").rules[0])
+
+
+def test_owner_reviewed_item_with_unparseable_evidence_fails(tmp_path: Path) -> None:
+    root = tmp_path
+    _write_rules(root, {"rules": [_rule(reviewed_by="AF")]}, "entries.yaml")
+    evidence = root / "rules" / "evidence"
+    evidence.mkdir(parents=True, exist_ok=True)
+    (evidence / "SYN-1.yaml").write_text("claims: [unclosed\n", encoding="utf-8")
+    assert _codes(verify_content(root)) == {"EVIDENCE_PARSE"}
 
 
 def test_missing_evidence(tmp_path: Path) -> None:
@@ -167,9 +192,18 @@ def test_verifier_values_differ(tmp_path: Path) -> None:
     assert not rule_is_active(load_ruleset(root / "rules").rules[0])
 
 
-def test_placeholder_marked_verified_never_activates(tmp_path: Path) -> None:
+def test_placeholder_marked_reviewed_never_activates(tmp_path: Path) -> None:
     root = tmp_path
     _write_rules(root, {"rules": [_rule("PLACEHOLDER:SYN")]}, "entries.yaml")
+    assert _codes(verify_content(root)) == {"PLACEHOLDER_ACTIVE"}
+    assert not rule_is_active(load_ruleset(root / "rules").rules[0])
+
+
+def test_placeholder_marked_owner_reviewed_never_activates(tmp_path: Path) -> None:
+    root = tmp_path
+    _write_rules(
+        root, {"rules": [_rule("PLACEHOLDER:SYN", reviewed_by="AF")]}, "entries.yaml"
+    )
     assert _codes(verify_content(root)) == {"PLACEHOLDER_ACTIVE"}
     assert not rule_is_active(load_ruleset(root / "rules").rules[0])
 
@@ -185,7 +219,7 @@ def test_rate_requires_allowlisted_rate_table(tmp_path: Path) -> None:
     assert rate_is_active(load_ruleset(passing / "rules").rates[0])
 
 
-def test_verified_golden_needs_two_derivations(tmp_path: Path) -> None:
+def test_agent_verified_golden_needs_two_derivations(tmp_path: Path) -> None:
     root = _golden(tmp_path)
     assert verify_content(root) == []
     derivation = root / "fixtures" / "goldens" / "derivations" / "synth-1.default.yaml"
@@ -198,7 +232,18 @@ def test_verified_golden_needs_two_derivations(tmp_path: Path) -> None:
     assert _codes(verify_content(root)) == {"GOLDEN_DERIVATIONS"}
 
 
-def test_verified_catalog_without_evidence_fails_the_gate(tmp_path: Path) -> None:
+def test_owner_signed_golden_needs_no_derivations(tmp_path: Path) -> None:
+    root = _golden(tmp_path, signed_off_by="AF")
+    derivations = root / "fixtures" / "goldens" / "derivations"
+    for derivation in derivations.iterdir():
+        derivation.unlink()
+    derivations.rmdir()
+    assert verify_content(root) == []
+
+
+def test_agent_verified_catalog_without_evidence_fails_the_gate(
+    tmp_path: Path,
+) -> None:
     rules = tmp_path / "rules"
     rules.mkdir()
     (rules / "catalog.yaml").write_text(
@@ -206,7 +251,8 @@ def test_verified_catalog_without_evidence_fails_the_gate(tmp_path: Path) -> Non
             [
                 "entries:",
                 "  - category: SYNTHETIC",
-                "    status: verified",
+                "    status: signed",
+                "    signed_off_by: agent-verified",
                 "    required_keys:",
                 "      - vendor_name",
             ]
@@ -217,10 +263,31 @@ def test_verified_catalog_without_evidence_fails_the_gate(tmp_path: Path) -> Non
     errors = verify_content(tmp_path)
     assert _codes(errors) == {"MISSING_EVIDENCE"}
     assert any("catalog-SYNTHETIC" in error for error in errors)
-    assert catalog_is_verified(load_ruleset(rules).catalog[0])
+    assert not catalog_is_signed(load_ruleset(rules).catalog[0])
 
 
-def test_verified_basis_without_evidence_fails(tmp_path: Path) -> None:
+def test_owner_signed_catalog_without_evidence_passes(tmp_path: Path) -> None:
+    rules = tmp_path / "rules"
+    rules.mkdir()
+    (rules / "catalog.yaml").write_text(
+        "\n".join(
+            [
+                "entries:",
+                "  - category: SYNTHETIC",
+                "    status: signed",
+                "    signed_off_by: AF",
+                "    required_keys:",
+                "      - vendor_name",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    assert verify_content(tmp_path) == []
+    assert catalog_is_signed(load_ruleset(rules).catalog[0])
+
+
+def test_agent_verified_basis_without_evidence_fails(tmp_path: Path) -> None:
     rules = tmp_path / "rules"
     rules.mkdir()
     (rules / "filing_basis.yaml").write_text(
@@ -228,7 +295,8 @@ def test_verified_basis_without_evidence_fails(tmp_path: Path) -> None:
             [
                 "entries:",
                 '  - id: "synth"',
-                "    status: verified",
+                "    status: signed",
+                "    signed_off_by: agent-verified",
                 '    text: "Synthetic basis"',
             ]
         )
@@ -238,6 +306,41 @@ def test_verified_basis_without_evidence_fails(tmp_path: Path) -> None:
     errors = verify_content(tmp_path)
     assert _codes(errors) == {"MISSING_EVIDENCE"}
     assert any("basis-synth" in error for error in errors)
+
+
+def _rounding(signed_off_by: str | None = AGENT) -> dict[str, object]:
+    return {
+        "rounding": {
+            "id": "SYN-NEAREST-CENT-001",
+            "jurisdiction": "ZZ",
+            "mode": "nearest_cent_half_up",
+            "applies_to": "inexact_rate_product",
+            "source_url": "https://laws.statute.test/rounding",
+            "review_status": "reviewed",
+            "reviewed_by": signed_off_by,
+            "reviewed_at": "2026-01-01" if signed_off_by else None,
+        }
+    }
+
+
+def test_agent_verified_rounding_without_evidence_fails(tmp_path: Path) -> None:
+    rules = tmp_path / "rules"
+    rules.mkdir(exist_ok=True)
+    _allow(rules)
+    (rules / "rounding.yaml").write_text(dump_yaml(_rounding()), encoding="utf-8")
+    errors = verify_content(tmp_path)
+    assert _codes(errors) == {"MISSING_EVIDENCE"}
+    assert any("rounding-SYN-NEAREST-CENT-001" in error for error in errors)
+
+
+def test_owner_reviewed_rounding_without_evidence_passes(tmp_path: Path) -> None:
+    rules = tmp_path / "rules"
+    rules.mkdir(exist_ok=True)
+    _allow(rules)
+    (rules / "rounding.yaml").write_text(
+        dump_yaml(_rounding(signed_off_by="AF")), encoding="utf-8"
+    )
+    assert verify_content(tmp_path) == []
 
 
 def _passing_rule(
@@ -286,11 +389,12 @@ def _rate_tree(root: Path, *, authority: str) -> None:
     )
 
 
-def _golden(root: Path) -> Path:
+def _golden(root: Path, signed_off_by: str = AGENT) -> Path:
     expected = {"label": "NEEDS_HUMAN_REVIEW", "amount": None}
     golden = {
         "id": "synth-1",
-        "status": "verified",
+        "status": "signed",
+        "signed_off_by": signed_off_by,
         "expected": expected,
     }
     rules = root / "rules"

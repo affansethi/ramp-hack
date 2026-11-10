@@ -1,9 +1,12 @@
 """Load rule YAML. Candidate and PLACEHOLDER entries stay inactive.
 
-A rule or rate is active only when ``review_status`` is verified and its
-evidence passes the content-verification checks. A catalog entry is active
-only when ``status`` is verified. ``reviewed_by`` and ``signed_off_by`` are
-not activation inputs.
+A rule or rate is active when ``review_status`` is reviewed and it is
+owner-reviewed (``reviewed_by`` is an owner initial with the date where the
+schema has one) or agent-verified (``reviewed_by: agent-verified`` with
+evidence that passes the content-verification gate). A catalog entry is
+active when ``status`` is signed and ``signed_off_by`` is an owner initial
+or agent-verified with passing evidence. ``PLACEHOLDER:`` ids never
+activate. See docs/content-verification.md.
 """
 
 from dataclasses import dataclass
@@ -50,12 +53,20 @@ class RateEntry:
     evidence_ok: bool = False
 
 
+OWNER_REVIEWERS = frozenset({"AF", "RJ"})
+"""Owner initials that activate content without gate evidence."""
+
+AGENT_VERIFIED = "agent-verified"
+"""Marker that activates content only with passing gate evidence."""
+
+
 @dataclass(frozen=True)
 class CatalogEntry:
     category: str
     required_keys: tuple[str, ...]
     status: str
     signed_off_by: str | None
+    evidence_ok: bool = False
 
 
 @dataclass(frozen=True)
@@ -79,29 +90,59 @@ def catalog_item_id(category: str) -> str:
     return f"catalog-{category}"
 
 
+def rounding_item_id(rounding_id: str) -> str:
+    return f"rounding-{rounding_id}"
+
+
+def basis_item_id(section: str) -> str:
+    return f"basis-{section}"
+
+
+def golden_item_id(fixture_id: str) -> str:
+    return f"golden-{fixture_id}"
+
+
+def is_owner(value: object) -> bool:
+    """True when the review marker is an owner initial such as AF or RJ."""
+    return isinstance(value, str) and value.strip() in OWNER_REVIEWERS
+
+
+def is_agent_verified(value: object) -> bool:
+    """True when the review marker delegates activation to gate evidence."""
+    return isinstance(value, str) and value.strip() == AGENT_VERIFIED
+
+
 def rule_is_active(rule: RuleEntry) -> bool:
-    return (
-        rule.review_status == "verified"
-        and rule.evidence_ok
-        and bool(rule.primary_source_url.strip())
-        and not is_placeholder(rule.id)
-    )
+    if (
+        rule.review_status != "reviewed"
+        or not rule.primary_source_url.strip()
+        or is_placeholder(rule.id)
+    ):
+        return False
+    if is_owner(rule.reviewed_by) and bool((rule.reviewed_at or "").strip()):
+        return True
+    return is_agent_verified(rule.reviewed_by) and rule.evidence_ok
 
 
 def rate_is_active(rate: RateEntry) -> bool:
     item_id = rate_item_id(rate.jurisdiction, rate.location_code, rate.quarter)
-    return (
-        rate.review_status == "verified"
-        and rate.evidence_ok
-        and bool(rate.rate.strip())
-        and not is_placeholder(item_id)
-    )
+    if (
+        rate.review_status != "reviewed"
+        or not rate.rate.strip()
+        or is_placeholder(item_id)
+    ):
+        return False
+    if is_owner(rate.reviewed_by):
+        return True
+    return is_agent_verified(rate.reviewed_by) and rate.evidence_ok
 
 
-def catalog_is_verified(entry: CatalogEntry) -> bool:
-    return entry.status == "verified" and not is_placeholder(
-        catalog_item_id(entry.category)
-    )
+def catalog_is_signed(entry: CatalogEntry) -> bool:
+    if entry.status != "signed" or is_placeholder(catalog_item_id(entry.category)):
+        return False
+    if is_owner(entry.signed_off_by):
+        return True
+    return is_agent_verified(entry.signed_off_by) and entry.evidence_ok
 
 
 def _evidence_ok(
@@ -215,7 +256,7 @@ def _load_rules(path: Path) -> list[RuleEntry]:
                 reviewed_at=_optional_text(item.get("reviewed_at")),
                 evidence_ok=(
                     _evidence_ok(path.parent, rule_id, raw_values, "rule")
-                    if review_status == "verified"
+                    if is_agent_verified(item.get("reviewed_by"))
                     else False
                 ),
             )
@@ -252,7 +293,7 @@ def _load_rates(path: Path) -> list[RateEntry]:
                 reviewed_by=_optional_text(item.get("reviewed_by")),
                 evidence_ok=(
                     _evidence_ok(path.parent, item_id, raw_values, "rate")
-                    if review_status == "verified"
+                    if is_agent_verified(item.get("reviewed_by"))
                     else False
                 ),
             )
@@ -271,12 +312,23 @@ def _load_catalog(path: Path) -> list[CatalogEntry]:
         keys = item.get("required_keys")
         if not isinstance(keys, list) or not all(isinstance(key, str) for key in keys):
             raise ValueError("required_keys must be a list of strings")
+        category = _text(item.get("category"), "category")
         entries.append(
             CatalogEntry(
-                category=_text(item.get("category"), "category"),
+                category=category,
                 required_keys=tuple(keys),
                 status=_text(item.get("status"), "status"),
                 signed_off_by=_optional_text(item.get("signed_off_by")),
+                evidence_ok=(
+                    _evidence_ok(
+                        path.parent,
+                        catalog_item_id(category),
+                        _raw_mapping(item),
+                        "catalog",
+                    )
+                    if is_agent_verified(item.get("signed_off_by"))
+                    else False
+                ),
             )
         )
     return entries
