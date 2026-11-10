@@ -167,7 +167,7 @@ def test_credentials_configured_reads_environment_only(
     assert blob_storage.credentials_configured() is configured
 
 
-def test_configured_storage_probe_reports_ok_or_unavailable(
+def test_credential_env_without_storage_url_stays_skipped(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _clear_storage_config(monkeypatch)
@@ -181,53 +181,85 @@ def test_configured_storage_probe_reports_ok_or_unavailable(
             del args, kwargs
             calls.append("credential")
 
-    class FakeContainer:
-        def __init__(self, result: bool | Exception) -> None:
-            self._result = result
-
-        def exists(self) -> bool:
-            if isinstance(self._result, Exception):
-                raise self._result
-            return self._result
-
     class FakeBlob:
-        result: bool | Exception = True
-
         def __init__(self, *args: object, **kwargs: object) -> None:
             del args, kwargs
             calls.append("blob")
 
+    monkeypatch.setattr(blob_storage, "DefaultAzureCredential", FakeCredential)
+    monkeypatch.setattr(blob_storage, "BlobServiceClient", FakeBlob)
+
+    response = _client().get("/health")
+    assert response.status_code == 200
+    assert response.json()["storage"] == "skipped"
+    assert calls == []
+
+
+def test_enabled_storage_probe_reports_ok_or_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_storage_config(monkeypatch)
+    monkeypatch.setenv("AZURE_STORAGE_ACCOUNT_URL", "https://example.invalid")
+    calls: list[str] = []
+
+    class FakeCredential:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+            calls.append("credential")
+
+    class FakeContainer:
+        def get_container_properties(self, timeout: int = 3) -> None:
+            del timeout
+            result = FakeBlob.result
+            if isinstance(result, Exception):
+                raise result
+            if result is False:
+                raise RuntimeError("container missing")
+
+    class FakeBlob:
+        result: bool | Exception = True
+        raise_in_init = False
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+            calls.append("blob")
+            if FakeBlob.raise_in_init:
+                raise ValueError("bad account url")
+
         def get_container_client(self, name: str) -> FakeContainer:
             del name
-            return FakeContainer(type(self).result)
-
-    def fake_extract(*args: object, **kwargs: object) -> None:
-        del args, kwargs
-        calls.append("model")
+            return FakeContainer()
 
     monkeypatch.setattr(blob_storage, "DefaultAzureCredential", FakeCredential)
     monkeypatch.setattr(blob_storage, "BlobServiceClient", FakeBlob)
-    monkeypatch.setattr("app.adapters.extractor.extract_bounded", fake_extract)
+    blob_storage._build_probe_container.cache_clear()
 
     client = _client()
-    FakeBlob.result = True
     ok = client.get("/health")
     assert ok.status_code == 200
     assert ok.json()["status"] == "ok"
     assert ok.json()["storage"] == "ok"
     assert calls == ["credential", "blob"]
-    assert "model" not in calls
 
     calls.clear()
+    blob_storage._build_probe_container.cache_clear()
     FakeBlob.result = False
     missing = client.get("/api/v1/health")
     assert missing.status_code == 200
     assert missing.json()["storage"] == "unavailable"
 
     calls.clear()
+    blob_storage._build_probe_container.cache_clear()
     FakeBlob.result = RuntimeError("storage down")
     failed = client.get("/health")
     assert failed.status_code == 200
     assert failed.json()["status"] == "ok"
     assert failed.json()["storage"] == "unavailable"
-    assert "model" not in calls
+
+    calls.clear()
+    blob_storage._build_probe_container.cache_clear()
+    FakeBlob.raise_in_init = True
+    constructed = client.get("/health")
+    assert constructed.status_code == 200
+    assert constructed.json()["storage"] == "unavailable"
+    blob_storage._build_probe_container.cache_clear()

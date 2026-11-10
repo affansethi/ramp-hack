@@ -4,9 +4,6 @@ Auth is DefaultAzureCredential only (no keys): locally it uses your
 `az login`, in Azure the app's managed identity. Account and container
 match Technical Spec v2 §9. When storage is not configured every public
 function raises StorageUnavailable and no credential is ever constructed.
-
-Health asks ``credentials_configured`` before constructing a credential.
-When that is false, nothing here builds DefaultAzureCredential.
 """
 
 import hashlib
@@ -129,11 +126,14 @@ def _health_credential() -> DefaultAzureCredential:
 def probe_container() -> bool:
     """True when the configured container exists.
 
-    Caller must check ``credentials_configured`` first. This constructs
-    DefaultAzureCredential and contacts storage.
+    Raises StorageUnavailable before any credential or client is built
+    when storage is not enabled.
     """
+    url = _account_url()
+    if url is None:
+        raise StorageUnavailable("Blob storage is not configured")
     service = BlobServiceClient(
-        _account_url() or DEFAULT_ACCOUNT_URL,
+        url,
         credential=_health_credential(),
         connection_timeout=5,
         read_timeout=5,
@@ -176,8 +176,18 @@ def _probe_container() -> ContainerClient:
 
 
 def check_container() -> bool:
-    """Cheap, bounded reachability check; False when the call fails."""
-    container = _probe_container()
+    """Cheap, bounded reachability check; False when an enabled check fails.
+
+    StorageUnavailable still propagates when storage is not configured.
+    Credential or client construction errors on an enabled account are
+    reported as False so /health can stay up.
+    """
+    try:
+        container = _probe_container()
+    except StorageUnavailable:
+        raise
+    except Exception:
+        return False
     try:
         container.get_container_properties(timeout=3)
     except Exception:

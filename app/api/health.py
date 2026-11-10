@@ -1,9 +1,9 @@
 """Health endpoint: reports modes and storage, never calls the model.
 
-Architecture §4: database, storage, and modes. When storage is not enabled
-and no Azure credential is configured, storage is ``skipped`` and
-DefaultAzureCredential is not constructed. ``unavailable`` is reserved for a
-configured check that failed. The HTTP status stays 200.
+Architecture §4: database, storage, and modes. When storage is not enabled,
+storage is ``skipped`` and DefaultAzureCredential is not constructed.
+``unavailable`` is reserved for an enabled check that failed. The HTTP
+status stays 200.
 """
 
 from typing import Literal
@@ -32,15 +32,12 @@ class HealthResponse(BaseModel):
 
 
 def _storage_report() -> StorageReport:
-    if storage.storage_enabled():
-        return "ok" if storage.check_container() else "unavailable"
-    if not storage.credentials_configured():
+    if not storage.storage_enabled():
         return "skipped"
     try:
-        reachable = storage.probe_container()
+        return "ok" if storage.check_container() else "unavailable"
     except Exception:
         return "unavailable"
-    return "ok" if reachable else "unavailable"
 
 
 def _health_payload(

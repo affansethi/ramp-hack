@@ -64,6 +64,7 @@ def test_disabled_every_function_raises(disabled) -> None:
         lambda: storage.download("a"),
         lambda: storage.get("a"),
         lambda: storage.check_container(),
+        lambda: storage.probe_container(),
         lambda: storage.put_document(b"x", "text/plain"),
         lambda: storage.put_export("w", 1, "f", b"x", "csv"),
     ]
