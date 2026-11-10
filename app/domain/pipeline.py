@@ -25,7 +25,6 @@ from app.domain.holds import (
 from app.domain.moneyutil import differs_by_more_than_one_cent, parse_decimal
 from app.domain.ruleset import Ruleset
 from app.models import (
-    AuditEvent,
     Determination,
     Document,
     Evidence,
@@ -371,9 +370,20 @@ def advance_purchase(session: Session, purchase_id: str, ruleset: Ruleset) -> No
         ).all()
     )
     _apply_cross_check(purchase, lines, facts)
-    _stage_audit(
-        session, purchase.org_id, "hold_check", purchase.id, purchase.facts_version
-    )
+    version = purchase.facts_version
+
+    def stage(name: str) -> None:
+        _stage_audit(
+            session,
+            purchase.org_id,
+            name,
+            purchase.id,
+            version,
+            ruleset_version=ruleset.version,
+        )
+
+    _stage_audit(session, purchase.org_id, "cross_check", purchase.id, version)
+    stage("classify")
     if not purchase.category or purchase.category not in SUPPORTED_CATEGORIES:
         if (
             purchase.category not in SUPPORTED_CATEGORIES
@@ -385,6 +395,7 @@ def advance_purchase(session: Session, purchase_id: str, ruleset: Ruleset) -> No
         _set_hold(session, purchase, HoldDecision("MISSING_REQUIRED_FACT", "category"))
         purchase.item_status = "HELD"
         return
+    stage("hold_check")
     hold = _first_hold(purchase.category, lines, facts, ruleset)
     if hold is not None:
         _set_hold(session, purchase, hold)
@@ -392,6 +403,7 @@ def advance_purchase(session: Session, purchase_id: str, ruleset: Ruleset) -> No
         return
     _clear_holds(session, purchase, release_version=purchase.facts_version)
     states = _states_for_purchase(lines, facts)
+    stage("jurisdiction_set")
     if undeclared(states):
         _item_nhr(session, purchase, ruleset, "UNDECLARED_JURISDICTION", lines)
         return
@@ -401,15 +413,14 @@ def advance_purchase(session: Session, purchase_id: str, ruleset: Ruleset) -> No
         )
         purchase.item_status = "HELD"
         return
+    stage("engine_call")
     for line in lines:
         line_states = _states_for_line(line, facts)
         for jurisdiction in line_states:
             _evaluate_one(
                 session, purchase, line, jurisdiction, facts, ruleset, len(states)
             )
-    _stage_audit(
-        session, purchase.org_id, "determine", purchase.id, purchase.facts_version
-    )
+    stage("response_check")
     purchase.item_status = "DETERMINED"
 
 
@@ -505,6 +516,8 @@ def _ingest(
         stored_lines.append(row)
     session.flush()
     _write_facts(session, purchase, document, stored_lines, lines, bill_to)
+    # A new canonical purchase: deduplication found no exact match to merge.
+    _stage_audit(session, org_id, "deduplicate", purchase.id, purchase.facts_version)
     _stage_audit(session, org_id, "extract", purchase.id, purchase.facts_version)
     _stage_audit(session, org_id, "admit_facts", purchase.id, purchase.facts_version)
     event.purchase_id = purchase.id
@@ -1119,22 +1132,31 @@ def _stage_audit(
     object_id: str,
     version: int,
     object_type: str = "purchase",
+    *,
+    ruleset_version: str | None = None,
 ) -> None:
-    found = session.scalar(
-        select(AuditEvent).where(
-            AuditEvent.org_id == org_id,
-            AuditEvent.object_type == "purchase",
-            AuditEvent.object_id == object_id,
-            AuditEvent.command == command,
-            AuditEvent.object_version == version,
-        )
-    )
-    if found is not None:
-        return
+    """One audit event per stage and immutable input version (Tech Spec v2 §4).
+
+    The input identity is the object version plus, for stages that read the
+    rules, the ruleset version, carried in the free-text command field. A
+    retry for the same identity writes nothing; the check runs under the
+    audit writer's lock and a unique index backs it up.
+    """
+    if ruleset_version is not None:
+        command = f"{command}@{ruleset_version}"
     # Same writer as fact and review commands, so before_hash stays one chain.
     from app.domain.commands import _audit
 
-    _audit(session, org_id, "system", command, "purchase", object_id, version)
+    _audit(
+        session,
+        org_id,
+        "system",
+        command[:80],
+        object_type,
+        object_id,
+        version,
+        dedupe=True,
+    )
 
 
 def _find_event(session: Session, org_id: str, event_id: str) -> SourceEvent | None:

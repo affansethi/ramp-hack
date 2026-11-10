@@ -2,6 +2,7 @@
 
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import IntegrityError
 
 
 def upgrade_session_csrf(engine: Engine) -> None:
@@ -80,3 +81,26 @@ def upgrade_workpapers(engine: Engine) -> None:
                 "WHERE status = 'READY_TO_FILE_SIMULATED'"
             )
         )
+
+
+def upgrade_audit_stage_index(engine: Engine) -> None:
+    """Add the one-row-per-stage index to an existing audit_events table.
+
+    A local scratch database that already holds duplicate stage rows keeps
+    working without the index; the audit writer still dedupes under its lock.
+    """
+    with engine.connect() as connection:
+        if "audit_events" not in inspect(connection).get_table_names():
+            return
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uq_audit_system_stage "
+                    "ON audit_events "
+                    "(org_id, object_type, object_id, command, object_version) "
+                    "WHERE actor_id = 'system'"
+                )
+            )
+    except IntegrityError:
+        return
