@@ -68,7 +68,10 @@ class RampSimulator:
         )
         merchant = record.get("merchant_location") or {}
         holder = record.get("card_holder") or {}
-        receipt_items = (record.get("merchant_data") or {}).get("receipt") or []
+        # Tech Spec v2 §8: merchant_data.receipt.items[]
+        # {description, quantity, unit_cost, tax, total}.
+        receipt = (record.get("merchant_data") or {}).get("receipt")
+        receipt_items = receipt.get("items") or [] if isinstance(receipt, dict) else []
         ocr_lines = [
             line
             for rid in receipt_ids
