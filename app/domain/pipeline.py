@@ -25,6 +25,7 @@ from app.domain.holds import (
 from app.domain.moneyutil import differs_by_more_than_one_cent, parse_decimal
 from app.domain.ruleset import Ruleset
 from app.models import (
+    AuditEvent,
     Determination,
     Document,
     Evidence,
@@ -261,6 +262,16 @@ def ingest_fetched_record(
             _enqueue(session, job.org_id, existing.id)
         event.purchase_id = job.purchase_id = existing.id
         return
+    vendor = record["vendor"] or ""
+    invoice_number = record["invoice_number"] or ""
+    invoice_date = record["invoice_date"] or ""
+    matched, ambiguous = _invoice_candidates(
+        session, job.org_id, vendor, invoice_number, invoice_date, amount
+    )
+    if matched is not None:
+        event.purchase_id = job.purchase_id = matched.id
+        _stage_audit(session, job.org_id, "deduplicate", matched.id, 1)
+        return
     scenario = (
         get_scenario(inputs["demo_scenario"]) if inputs.get("demo_scenario") else None
     )
@@ -307,6 +318,9 @@ def ingest_fetched_record(
             transaction_id=transaction_id,
         )
     event.purchase_id = job.purchase_id = result.purchase_id
+    if result.purchase_id is not None:
+        for other in ambiguous:
+            _record_ambiguous(session, job.org_id, result.purchase_id, other.id)
 
 
 def advance_purchase(session: Session, purchase_id: str, ruleset: Ruleset) -> None:
@@ -412,6 +426,15 @@ def _ingest(
         )
         session.add(event)
         session.flush()
+    matched, ambiguous = _invoice_candidates(
+        session, org_id, vendor, invoice_number, invoice_date, entity_amount
+    )
+    if matched is not None:
+        event.purchase_id = matched.id
+        event.signature_result = signature_result
+        _stage_audit(session, org_id, "deduplicate", matched.id, 1)
+        job = _enqueue(session, org_id, matched.id)
+        return IngestResult(matched.id, job.id, True, event.id)
     purchase = Purchase(
         id=str(uuid4()),
         org_id=org_id,
@@ -462,6 +485,8 @@ def _ingest(
     _write_facts(session, purchase, document, stored_lines, lines, bill_to)
     event.purchase_id = purchase.id
     event.signature_result = signature_result
+    for other in ambiguous:
+        _record_ambiguous(session, org_id, purchase.id, other.id)
     job = _enqueue(session, org_id, purchase.id)
     return IngestResult(purchase.id, job.id, False, event.id)
 
@@ -929,6 +954,81 @@ def _enqueue(session: Session, org_id: str, purchase_id: str) -> Job:
     session.add(job)
     session.flush()
     return job
+
+
+def _invoice_candidates(
+    session: Session,
+    org_id: str,
+    vendor: str,
+    invoice_number: str,
+    invoice_date: str,
+    amount: str,
+) -> tuple[Purchase | None, list[Purchase]]:
+    if not vendor.strip() or not invoice_number.strip():
+        return None, []
+    rows = list(
+        session.scalars(select(Purchase).where(Purchase.org_id == org_id)).all()
+    )
+    same = [
+        row
+        for row in rows
+        if row.entity_name == ENTITY_NAME
+        and row.vendor.strip().casefold() == vendor.strip().casefold()
+        and row.invoice_number.strip().casefold() == invoice_number.strip().casefold()
+    ]
+    exact = [
+        row
+        for row in same
+        if row.invoice_date == invoice_date and _amount_equal(row, amount)
+    ]
+    matched = exact[0] if exact else None
+    ambiguous = [row for row in same if matched is None or row.id != matched.id]
+    return matched, ambiguous
+
+
+def _amount_equal(purchase: Purchase, amount: str) -> bool:
+    stored = purchase.ramp_entity_amount
+    if stored is None:
+        return False
+    return parse_decimal(stored) == parse_decimal(amount)
+
+
+def _record_ambiguous(
+    session: Session, org_id: str, left_id: str, right_id: str
+) -> None:
+    left_command = f"ambiguous_invoice_match:{right_id}"
+    right_command = f"ambiguous_invoice_match:{left_id}"
+    _stage_audit(session, org_id, left_command, left_id, 1)
+    _stage_audit(session, org_id, right_command, right_id, 1)
+
+
+def _stage_audit(
+    session: Session, org_id: str, command: str, object_id: str, version: int
+) -> None:
+    found = session.scalar(
+        select(AuditEvent).where(
+            AuditEvent.org_id == org_id,
+            AuditEvent.object_id == object_id,
+            AuditEvent.command == command,
+            AuditEvent.object_version == version,
+        )
+    )
+    if found is not None:
+        return
+    session.add(
+        AuditEvent(
+            id=str(uuid4()),
+            org_id=org_id,
+            actor_id="system",
+            command=command[:80],
+            object_type="purchase",
+            object_id=object_id,
+            object_version=version,
+            before_hash="",
+            after_hash=_hash(f"{object_id}:{command}:{version}"),
+            created_at=utcnow(),
+        )
+    )
 
 
 def _find_event(session: Session, org_id: str, event_id: str) -> SourceEvent | None:

@@ -10,7 +10,15 @@ from app.config import Settings
 from app.contracts.determination import DeterminationRead
 from app.contracts.money import Money
 from app.domain.moneyutil import money_json, parse_decimal
-from app.models import Determination, Fact, Hold, Purchase, PurchaseLine, Question
+from app.models import (
+    AuditEvent,
+    Determination,
+    Fact,
+    Hold,
+    Purchase,
+    PurchaseLine,
+    Question,
+)
 
 _PROMPTS = {
     "user_location": "Send a seat export or a named answer for seat location.",
@@ -150,6 +158,7 @@ def purchase_detail(
             _determination_json(row) for row in determinations if row.is_current
         ],
         "actions": _actions(queue),
+        "possible_duplicate_ids": _possible_duplicate_ids(session, purchase),
     }
     if queue == "held":
         total = sum(
@@ -241,6 +250,23 @@ def _actions(queue: str) -> list[str]:
     if queue == "needs_human_review":
         return ["refer"]
     return []
+
+
+def _possible_duplicate_ids(session: Session, purchase: Purchase) -> list[str]:
+    prefix = "ambiguous_invoice_match:"
+    rows = session.scalars(
+        select(AuditEvent).where(
+            AuditEvent.org_id == purchase.org_id,
+            AuditEvent.object_id == purchase.id,
+            AuditEvent.command.like(prefix + "%"),
+        )
+    ).all()
+    found: list[str] = []
+    for row in rows:
+        other = row.command[len(prefix) :]
+        if other and other not in found:
+            found.append(other)
+    return found
 
 
 def _holds(session: Session, purchase_id: str) -> list[Hold]:

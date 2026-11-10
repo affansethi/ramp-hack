@@ -57,6 +57,15 @@ class IdempotencyKey(Base):
 
 class AuditEvent(Base):
     __tablename__ = "audit_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "org_id",
+            "object_id",
+            "command",
+            "object_version",
+            name="uq_audit_stage",
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     org_id: Mapped[str] = mapped_column(String(36), index=True)
