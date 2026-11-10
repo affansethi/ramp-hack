@@ -8,7 +8,9 @@ from tests.api.test_flow import _run, signed_client  # noqa: F401
 from tests.api.test_ramp_fetch import _record, _send
 
 
-def test_ingest_retry_does_not_duplicate_stage_event(signed_client) -> None:
+def test_ingest_retry_does_not_duplicate_stage_event(
+    signed_client,  # noqa: F811
+) -> None:
     client = signed_client
     _record(client)
     first = _send(client, "evt-audit", "transactions.cleared", "synthetic-id")
@@ -23,7 +25,7 @@ def test_ingest_retry_does_not_duplicate_stage_event(signed_client) -> None:
         assert count == 1
 
 
-def test_advance_writes_hold_check_once(signed_client) -> None:
+def test_advance_writes_hold_check_once(signed_client) -> None:  # noqa: F811
     _run(signed_client, "case1", "audit-case1")
     poll_once(signed_client.app.state.ctx)
     with signed_client.app.state.ctx.session_factory() as session:
