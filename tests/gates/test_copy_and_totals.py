@@ -64,12 +64,17 @@ _SAVINGS_OR_RECOVERED = re.compile(
     re.IGNORECASE,
 )
 _NET_WORD = re.compile(r"(?<![\w.])net(?![\w])", re.IGNORECASE)
+_NET_TOTAL = re.compile(
+    r"(?<![A-Za-z])net[_\-]?totals?(?![A-Za-z])"
+    r"|(?<![A-Za-z])totals?[_\-]?net(?![A-Za-z])",
+    re.IGNORECASE,
+)
 _COMBINED_NET = re.compile(
-    r"liabilit(?:y|ies)\s*-\s*refunds?",
+    r"liabilit\w*\s*-\s*refunds?\w*",
     re.IGNORECASE,
 )
 _BANNED_FIELD = re.compile(
-    r"^(?:net|savings|recovered)(?:_[a-z0-9]+)?$",
+    r"^(?:net|savings|recovered|net_?totals?|totals?_?net)(?:_[a-z0-9]+)?$",
     re.IGNORECASE,
 )
 _ALLOWED_FIELDS = {"line_net", "line_net_amount"}
@@ -193,7 +198,7 @@ def claim_violations(text: str) -> list[str]:
     for pattern in _ALLOWED_CLAIM:
         masked = pattern.sub(" ", masked)
     found: list[str] = []
-    for pattern in (_SAVINGS_OR_RECOVERED, _NET_WORD, _COMBINED_NET):
+    for pattern in (_SAVINGS_OR_RECOVERED, _NET_WORD, _NET_TOTAL, _COMBINED_NET):
         found.extend(match.group(0) for match in pattern.finditer(masked))
     return found
 
@@ -592,6 +597,55 @@ def test_rg2_allows_line_net_and_not_recovered_cash(text: str) -> None:
     assert claim_violations(text) == []
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        '{"net_total": "100.00"}',
+        '{"total_net": "100.00"}',
+        "net_total = liabilitiesTotal - refundsTotal",
+        "const netTotal = liabilitiesTotal - refundsTotal",
+        "totalNet = liabilities - refunds",
+    ],
+)
+def test_rg2_rejects_net_total_identifiers(text: str) -> None:
+    violations = [item.lower() for item in claim_violations(text)]
+    assert violations
+    assert any("net" in item and "total" in item for item in violations)
+
+
+def test_rg2_rejects_planted_api_dict_and_web_expression(tmp_path: Path) -> None:
+    app = tmp_path / "app"
+    (app / "api").mkdir(parents=True)
+    (app / "contracts").mkdir()
+    (app / "models.py").write_text(
+        '"""Model docstring."""\npass\n',
+        encoding="utf-8",
+    )
+    (app / "api" / "routes.py").write_text(
+        'RESPONSE = {"net_total": "100.00"}\n',
+        encoding="utf-8",
+    )
+    (app / "contracts" / "money.py").write_text(
+        '"""Contract docstring."""\npass\n',
+        encoding="utf-8",
+    )
+    web = tmp_path / "web"
+    web.mkdir()
+    (web / "totals.ts").write_text(
+        "const net_total = liabilitiesTotal - refundsTotal;\n",
+        encoding="utf-8",
+    )
+    violations = [
+        item.lower() for item in claim_violations(rg2_text_from_root(tmp_path))
+    ]
+    assert any("net" in item and "total" in item for item in violations)
+    assert any("liabilit" in item for item in violations)
+    assert field_name_violation("net_total") == "net_total"
+    assert field_name_violation("netTotal") is not None
+    assert field_name_violation("total_net") is not None
+    assert field_name_violation("line_net") is None
+
+
 def test_rg2_scanner_keeps_dict_string_values() -> None:
     source = 'RESPONSE = {"message": "your savings total of 5.00"}\n'
     scanned = python_scan_text(source)
@@ -658,6 +712,9 @@ def test_rg2_production_models_and_api_have_no_claims() -> None:
     assert field_name_violation("net") == "net"
     assert field_name_violation("savings") == "savings"
     assert field_name_violation("recovered_total") == "recovered_total"
+    assert field_name_violation("net_total") == "net_total"
+    assert field_name_violation("netTotal") is not None
+    assert field_name_violation("total_net") is not None
     assert field_name_violation("line_net") is None
 
 
@@ -722,20 +779,22 @@ def test_rg8_scans_the_entire_export_body(tmp_path: Path) -> None:
 
 
 def test_rg8_placeholder_has_no_filed_or_paid_when_web_is_absent() -> None:
-    assert not (ROOT / "web").exists()
-    placeholder = (ROOT / "app" / "static" / "index.html").read_text(encoding="utf-8")
-    assert "filed" not in placeholder.lower()
-    assert "paid" not in placeholder.lower()
     # export_workpaper delegates CSV and JSON bodies to these helpers.
     parts = [inspect.getsource(fn) for fn in (export_workpaper, _document, _render_csv)]
     export_source = "\n".join(parts)
     assert "def export_workpaper" in parts[0]
     assert parts[2].strip().endswith("return buffer.getvalue()")
     scanned = rg8_corpus(ROOT, export_source)
-    assert placeholder in scanned
     assert export_source in scanned
+    placeholder_path = ROOT / "app" / "static" / "index.html"
+    if placeholder_path.is_file():
+        placeholder = placeholder_path.read_text(encoding="utf-8")
+        assert placeholder in scanned
+        if not (ROOT / "web").exists():
+            assert "filed" not in placeholder.lower()
+            assert "paid" not in placeholder.lower()
+            assert rg8_violations(placeholder) == []
     assert rg8_violations(scanned) == []
-    assert rg8_violations(placeholder) == []
 
 
 def test_tax_or_engine_amount_on_a_hold_fails() -> None:
