@@ -9,7 +9,7 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 from httpx import Response
-from sqlalchemy import select, text
+from sqlalchemy import inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -671,3 +671,226 @@ def test_ready_fingerprint_index_ignores_drafts(api: Api) -> None:
     finally:
         session.rollback()
         session.close()
+
+
+def test_startup_upgrades_existing_workpaper_table(tmp_path: Path) -> None:
+    from app.db import make_engine
+    from app.migrations import upgrade_workpapers
+    from app.seed import ORG_ID
+
+    database = make_engine("sqlite:///" + (tmp_path / "app.db").resolve().as_posix())
+    with database.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE TABLE workpapers ("
+                "id VARCHAR(36) PRIMARY KEY, org_id VARCHAR(36), "
+                "entity_name VARCHAR(200), jurisdiction VARCHAR(8), "
+                "period VARCHAR(16), version INTEGER, status VARCHAR(40), "
+                "fingerprint VARCHAR(64), frozen_at VARCHAR(32), "
+                "created_at VARCHAR(32))"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO workpapers ("
+                "id, org_id, entity_name, jurisdiction, period, version, "
+                "status, fingerprint, frozen_at, created_at"
+                ") VALUES ("
+                "'legacy-workpaper', :org, 'Legacy Entity', 'CA', '1999Q1', "
+                "1, 'DRAFT', NULL, NULL, '2026-01-01T00:00:00Z')"
+            ),
+            {"org": ORG_ID},
+        )
+    database.dispose()
+    opened = _open_api(tmp_path, unmatched_ny_rate=False)
+    try:
+        api = next(opened)
+        draft = _create(api, "upgraded")
+        assert draft["status"] == "DRAFT"
+        assert draft["created_after_ready"] is False
+        assert draft["approved_liabilities_message"] == "No approved liabilities"
+        session = _session(api)
+        try:
+            legacy = session.get(Workpaper, "legacy-workpaper")
+            assert legacy is not None
+            assert legacy.created_after_ready is False
+            assert legacy.snapshot is None
+            columns = {
+                column["name"]
+                for column in inspect(session.get_bind()).get_columns("workpapers")
+            }
+            assert "created_after_ready" in columns
+            assert "snapshot" in columns
+            index_sql = session.execute(
+                text(
+                    "SELECT sql FROM sqlite_master "
+                    "WHERE name = 'uq_workpaper_ready_fingerprint'"
+                )
+            ).scalar_one()
+            assert isinstance(index_sql, str)
+            assert "UNIQUE" in index_sql.upper()
+            assert "READY_TO_FILE_SIMULATED" in index_sql
+        finally:
+            session.close()
+        upgrade_workpapers(api.client.app.state.ctx.session_factory.kw["bind"])
+        session = _session(api)
+        try:
+            legacy = session.get(Workpaper, "legacy-workpaper")
+            assert legacy is not None
+            assert legacy.created_after_ready is False
+            assert legacy.snapshot is None
+        finally:
+            session.close()
+        assert _create(api, "upgraded-again")["id"] == draft["id"]
+    finally:
+        opened.close()
+
+
+def test_refund_approval_after_ready_opens_a_flagged_draft(api: Api) -> None:
+    liability = _run(api, "case1", "case1")
+    refund = _run(api, "case3", "case3")
+    liability_row = _decide(
+        api,
+        str(liability["purchase_id"]),
+        "approve-liability",
+        action="approve",
+        approval_path="LIABILITY",
+    )
+    liability_detail = _detail(api, str(liability["purchase_id"]), "liability-invoice")
+    refund_detail = _detail(api, str(refund["purchase_id"]), "refund-invoice")
+    liability_invoice = str(liability_detail["invoice_number"])
+    refund_invoice = str(refund_detail["invoice_number"])
+    liability_amount = liability_row["engine_amount"]
+    assert isinstance(liability_amount, dict)
+
+    draft = _create(api, "draft")
+    assert {
+        "invoice": refund_invoice,
+        "reason": "UNREVIEWED",
+    } in draft["excluded"]
+    assert draft["refund_candidates"]["lines"] == []
+    workpaper_id = str(draft["id"])
+    ready = _mark(
+        api,
+        workpaper_id,
+        "ready",
+        version=int(draft["version"]),
+        fingerprint=str(draft["fingerprint"]),
+    )
+    assert ready.status_code == 200, ready.text
+    frozen = _export(api, workpaper_id, "json", "json-before")
+    assert frozen.status_code == 200
+    frozen_body = frozen.json()
+    assert frozen_body["refund_candidates"]["lines"] == []
+    assert {
+        "invoice": refund_invoice,
+        "reason": "UNREVIEWED",
+    } in frozen_body["excluded"]
+    stored = _stored(api, workpaper_id)
+
+    refund_row = _decide(
+        api,
+        str(refund["purchase_id"]),
+        "approve-refund",
+        action="approve",
+        approval_path="REFUND_PURSUIT",
+    )
+    refund_amount = refund_row["engine_amount"]
+    assert isinstance(refund_amount, dict)
+    assert _export(api, workpaper_id, "json", "json-after-approval").content == (
+        frozen.content
+    )
+
+    opened = _create(api, "next-draft")
+    assert opened["id"] != workpaper_id
+    assert opened["status"] == "DRAFT"
+    assert int(opened["version"]) > int(draft["version"])
+    assert opened["created_after_ready"] is True
+    assert opened["fingerprint"] != draft["fingerprint"]
+    assert opened["approved_liabilities"] == [
+        {"invoice": liability_invoice, "amount": liability_amount}
+    ]
+    assert opened["refund_candidates"]["label"] == "not recovered cash"
+    assert opened["refund_candidates"]["lines"] == [
+        {"invoice": refund_invoice, "amount": refund_amount}
+    ]
+    assert all(
+        set(row) == {"invoice", "reason"}
+        for row in opened["excluded"]
+        if isinstance(row, dict)
+    )
+    assert {"invoice": refund_invoice, "reason": "UNREVIEWED"} not in opened["excluded"]
+    found: set[str] = set()
+    _keys(opened, found)
+    assert {"net", "savings", "recovered"}.isdisjoint(found)
+    exported = _export(api, str(opened["id"]), "json", "next-json")
+    assert exported.status_code == 200
+    assert exported.json()["created_after_ready"] is True
+    assert _export(api, workpaper_id, "json", "json-still").content == frozen.content
+    assert _stored(api, workpaper_id)["status"] == "READY_TO_FILE_SIMULATED"
+    assert _stored(api, workpaper_id)["lines"] == stored["lines"]
+    assert _stored(api, workpaper_id)["snapshot"] == stored["snapshot"]
+    assert _stored(api, workpaper_id)["fingerprint"] == stored["fingerprint"]
+
+
+def test_mark_ready_freezes_one_selection(
+    api: Api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import app.domain.commands as commands
+
+    created = _run(api, "case1", "case1")
+    _decide(
+        api,
+        str(created["purchase_id"]),
+        "approve",
+        action="approve",
+        approval_path="LIABILITY",
+    )
+    draft = _create(api, "draft")
+    calls = {"n": 0}
+    original = commands._read_snapshot
+
+    def diverge(
+        session: Session, org_id: str, jurisdiction: str, period: str
+    ) -> commands._Selection:
+        calls["n"] += 1
+        selection = original(session, org_id, jurisdiction, period)
+        if calls["n"] == 1:
+            return selection
+        extra = commands._Sections(
+            message=selection.sections.message,
+            liabilities=[*selection.sections.liabilities, ("SYN-RACE", "9.99")],
+            held_count=selection.sections.held_count,
+            open_count=selection.sections.open_count,
+            excluded=selection.sections.excluded,
+            refunds=selection.sections.refunds,
+            charged_correctly_count=selection.sections.charged_correctly_count,
+        )
+        return commands._Selection(extra, (*selection.liability_ids, "race-line"))
+
+    monkeypatch.setattr(commands, "_read_snapshot", diverge)
+    workpaper_id = str(draft["id"])
+    ready = _mark(
+        api,
+        workpaper_id,
+        "ready",
+        version=int(draft["version"]),
+        fingerprint=str(draft["fingerprint"]),
+    )
+    assert calls["n"] == 1
+    assert ready.status_code == 200, ready.text
+    assert "SYN-RACE" not in ready.text
+    body = ready.json()
+    stored = _stored(api, workpaper_id)
+    assert len(body["approved_liabilities"]) == len(stored["lines"])
+    assert "race-line" not in stored["lines"]
+    monkeypatch.setattr(commands, "_read_snapshot", original)
+    again = _mark(
+        api,
+        workpaper_id,
+        "ready-again",
+        version=int(draft["version"]),
+        fingerprint=str(body["fingerprint"]),
+    )
+    assert again.status_code == 200, again.text
+    assert again.json()["id"] == workpaper_id
