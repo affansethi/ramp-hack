@@ -15,6 +15,7 @@ from app.config import load_settings
 from app.main import create_app
 from app.models import Job, Purchase, SourceEvent
 from app.worker.poller import poll_once
+from tests.api.conftest import assert_refund_candidates_stay_separate
 
 ROOT = Path(__file__).resolve().parents[2]
 GOOD_ENV = {
@@ -126,9 +127,7 @@ def test_signed_case_1_approves_the_engine_string(signed_client: TestClient) -> 
         }
     ]
     assert totals["approved_liabilities"]["message"] is None
-    blob = json.dumps(totals)
-    assert "savings" not in blob
-    assert "recovered" not in blob or "not recovered cash" in blob
+    assert_refund_candidates_stay_separate(totals)
 
 
 def test_case_6_holds_for_location_and_stays_out_of_totals(
@@ -146,6 +145,7 @@ def test_case_6_holds_for_location_and_stays_out_of_totals(
     assert totals["held"]["label"] == "purchase amount, not tax"
     assert totals["approved_liabilities"]["message"] == "No approved liabilities"
     assert "0.00" not in json.dumps(totals["approved_liabilities"])
+    assert_refund_candidates_stay_separate(totals)
 
 
 def test_case_4_is_unresolved_transition_with_no_amount(
