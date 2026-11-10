@@ -70,11 +70,21 @@ class CatalogEntry:
 
 
 @dataclass(frozen=True)
+class RoundingBasis:
+    mode: str
+    review_status: str
+    reviewed_by: str | None
+    source_url: str
+    jurisdiction: str | None = None
+
+
+@dataclass(frozen=True)
 class Ruleset:
     rules: tuple[RuleEntry, ...]
     rates: tuple[RateEntry, ...]
     catalog: tuple[CatalogEntry, ...]
     version: str
+    rounding: RoundingBasis | None = None
 
 
 def is_placeholder(rule_id: str) -> bool:
@@ -159,21 +169,38 @@ def _raw_mapping(item: dict[str, object]) -> dict[str, object]:
     return {str(key): value for key, value in item.items()}
 
 
+def rounding_is_active(basis: RoundingBasis | None) -> bool:
+    if basis is None:
+        return False
+    return (
+        basis.review_status == "reviewed"
+        and bool(basis.reviewed_by)
+        and bool(basis.source_url)
+        and basis.mode == "nearest_cent_half_up"
+    )
+
+
 def load_ruleset(directory: Path) -> Ruleset:
     rules = _load_rules(directory / "entries.yaml")
     rates = _load_rates(directory / "rates.yaml")
     catalog = _load_catalog(directory / "catalog.yaml")
+    rounding = _load_rounding(directory / "rounding.yaml")
     blob = "\n".join(
         path.read_text(encoding="utf-8") if path.exists() else ""
         for path in (
             directory / "entries.yaml",
             directory / "rates.yaml",
             directory / "catalog.yaml",
+            directory / "rounding.yaml",
         )
     )
     version = sha256(blob.encode("utf-8")).hexdigest()[:16]
     return Ruleset(
-        rules=tuple(rules), rates=tuple(rates), catalog=tuple(catalog), version=version
+        rules=tuple(rules),
+        rates=tuple(rates),
+        catalog=tuple(catalog),
+        version=version,
+        rounding=rounding,
     )
 
 
@@ -299,6 +326,21 @@ def _load_rates(path: Path) -> list[RateEntry]:
             )
         )
     return entries
+
+
+def _load_rounding(path: Path) -> RoundingBasis | None:
+    raw = _read(path).get("rounding")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("rounding must be a mapping")
+    return RoundingBasis(
+        mode=_text(raw.get("mode"), "mode"),
+        review_status=_text(raw.get("review_status"), "review_status"),
+        reviewed_by=_optional_text(raw.get("reviewed_by")),
+        source_url=_text(raw.get("source_url"), "source_url"),
+        jurisdiction=_optional_text(raw.get("jurisdiction")),
+    )
 
 
 def _load_catalog(path: Path) -> list[CatalogEntry]:

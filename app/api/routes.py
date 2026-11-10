@@ -494,6 +494,7 @@ def review(
         approval_path=body.approval_path,
         reason=body.reason,
         expected_version=body.expected_version,
+        rules_dir=request.app.state.settings.rules_dir,
     )
     row = session.get(Purchase, determination.purchase_id)
     if row is None:
@@ -574,7 +575,11 @@ def refund_letter(letter_id: str, request: Request, session: Db) -> dict[str, ob
         "invoice_number": letter.invoice_number,
         "amount": {"value": letter.amount, "currency": "USD"},
         "basis_text": letter.basis_text,
-        "basis_note": "Basis text is not verified. This draft is not sent.",
+        "basis_note": (
+            "This draft is not sent."
+            if letter.basis_text
+            else "Basis text is not verified. This draft is not sent."
+        ),
         "status": letter.status,
     }
 

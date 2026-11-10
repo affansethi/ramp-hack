@@ -64,7 +64,7 @@ def login(client: TestClient, key: str = "login") -> str:
 def _activate(dest: Path) -> None:
     """Sign the seed catalog and attach synthetic evidence in dest only."""
     dest.mkdir()
-    for name in ("entries.yaml", "rates.yaml", "catalog.yaml"):
+    for name in ("entries.yaml", "rates.yaml", "catalog.yaml", "filing-basis.txt"):
         text = (ROOT / "rules" / name).read_text(encoding="utf-8")
         if name == "catalog.yaml":
             text = text.replace("status: candidate", "status: signed")
