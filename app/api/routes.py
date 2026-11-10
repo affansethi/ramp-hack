@@ -141,15 +141,52 @@ def _viewer(request: Request, session: Session) -> DemoSession:
     return row
 
 
+def _upgrade_legacy_login(
+    session: Session, key: str, stored: dict[str, object]
+) -> dict[str, object]:
+    """A cached login from before CSRF stored session_id and no token.
+
+    Persist one token on that session and replace the stored body so a later
+    replay of the same Idempotency-Key does not mint another token.
+    """
+    current = stored.get("csrf_token")
+    if isinstance(current, str) and current:
+        return stored
+    session_id = stored.get("session_id")
+    if not isinstance(session_id, str) or not session_id:
+        return stored
+    demo = session.get(DemoSession, session_id)
+    if demo is None or demo.org_id != ORG_ID:
+        return stored
+    existing = demo.csrf_token
+    if isinstance(existing, str) and existing:
+        token = existing
+    else:
+        token = new_csrf_token()
+        demo.csrf_token = token
+        session.flush()
+    upgraded = {name: value for name, value in stored.items() if name != "session_id"}
+    upgraded["csrf_token"] = token
+    row = session.scalar(
+        select(IdempotencyKey).where(
+            IdempotencyKey.org_id == ORG_ID, IdempotencyKey.key == key
+        )
+    )
+    if row is not None:
+        row.response_body = json.dumps(upgraded)
+    return upgraded
+
+
 def _login_response(
-    request: Request, session: Session, stored: dict[str, object]
+    request: Request, session: Session, key: str, stored: dict[str, object]
 ) -> JSONResponse:
     """JSON carries csrf_token and never session_id. The cookie is HttpOnly."""
+    stored = _upgrade_legacy_login(session, key, stored)
     body = JSONResponse(
         {key: value for key, value in stored.items() if key != "session_id"}
     )
     token = stored.get("csrf_token")
-    if isinstance(token, str):
+    if isinstance(token, str) and token:
         demo = session.scalar(
             select(DemoSession).where(DemoSession.csrf_token == token)
         )
@@ -193,7 +230,7 @@ def login(body: LoginBody, request: Request, session: Db) -> Response:
             "csrf_token": demo.csrf_token,
         }
         finish(session, ORG_ID, _key(request) or "", canonical, stored)
-    return _login_response(request, session, stored)
+    return _login_response(request, session, _key(request) or "", stored)
 
 
 @router.post("/demo/reset")

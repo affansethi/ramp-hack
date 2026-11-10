@@ -1,5 +1,7 @@
 """Login CSRF token, origin allowlist, and the shared mutation guard."""
 
+import hashlib
+import json
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -10,7 +12,8 @@ from sqlalchemy import inspect, select, text
 from starlette.routing import Mount
 
 from app.api.guards import CSRF_HEADER, _equal
-from app.api.routes import COOKIE
+from app.api.routes import COOKIE, LoginBody
+from app.api.serialize import meta
 from app.config import load_settings
 from app.db import init_database, make_engine
 from app.main import create_app
@@ -21,12 +24,13 @@ from app.models import (
     IdempotencyKey,
     JournalEntryDraft,
     LiabilityLine,
+    Person,
     Purchase,
     RefundCandidate,
     ReviewDecision,
     Workpaper,
 )
-from app.seed import PERSON_ID
+from app.seed import ORG_ID, PERSON_ID
 from tests.api.test_contracts import _review_body
 from tests.api.test_flow import (  # noqa: F401
     GOOD_ENV,
@@ -487,3 +491,189 @@ def test_startup_adds_csrf_token_without_rewriting_old_sessions(tmp_path: Path) 
         assert row is not None
         assert row.csrf_token is None
     bind.dispose()
+
+
+def test_legacy_login_replay_persists_csrf_and_restores_the_cookie(
+    tmp_path: Path,
+) -> None:
+    """A pre-CSRF Idempotency-Key stored session_id. Replay upgrades that record."""
+    app = _app(tmp_path / "legacy-login.db")
+    session_id = "00000000-0000-4000-8000-0000000000aa"
+    with TestClient(app, base_url="http://testserver") as client:
+        db = _open(client)
+        try:
+            person = db.get(Person, PERSON_ID)
+            assert person is not None
+            person_name = person.name
+            legacy = {
+                **meta(client.app.state.settings),
+                "person_id": person.id,
+                "person_name": person_name,
+                "session_id": session_id,
+            }
+            canonical = LoginBody().model_dump_json()
+            db.add(
+                DemoSession(
+                    id=session_id,
+                    person_id=person.id,
+                    org_id=ORG_ID,
+                    created_at="2026-01-01T00:00:00Z",
+                    csrf_token=None,
+                )
+            )
+            db.add(
+                IdempotencyKey(
+                    id="00000000-0000-4000-8000-0000000000ab",
+                    org_id=ORG_ID,
+                    key="legacy-login",
+                    body_hash=hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+                    status_code=200,
+                    response_body=json.dumps(legacy),
+                    created_at="2026-01-01T00:00:00Z",
+                )
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        client.cookies.clear()
+        replay = client.post(
+            "/api/v1/demo/login",
+            json={},
+            headers=_headers("legacy-login"),
+        )
+        assert replay.status_code == 200, replay.text
+        body = replay.json()
+        assert "session_id" not in body
+        assert session_id not in replay.text
+        token = body["csrf_token"]
+        assert isinstance(token, str) and token
+        assert token != session_id
+        assert body["person_id"] == PERSON_ID
+        assert body["person_name"] == person_name
+        flags = _flags(replay.headers["set-cookie"])
+        assert "httponly" in flags
+        assert "secure" not in flags
+        assert client.cookies.get(COOKIE) == session_id
+        assert client.get("/api/v1/demo/scenarios").status_code == 200
+
+        db = _open(client)
+        try:
+            row = db.get(DemoSession, session_id)
+            assert row is not None
+            assert row.csrf_token == token
+            cached = db.scalar(
+                select(IdempotencyKey).where(IdempotencyKey.key == "legacy-login")
+            )
+            assert cached is not None
+            saved = json.loads(cached.response_body)
+            assert saved == body
+            assert "session_id" not in saved
+            assert (
+                cached.body_hash
+                == hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+            )
+        finally:
+            db.close()
+        assert _count(client, DemoSession) == 1
+
+        client.cookies.clear()
+        assert client.get("/api/v1/demo/scenarios").status_code == 401
+        again = client.post(
+            "/api/v1/demo/login",
+            json={},
+            headers=_headers("legacy-login"),
+        )
+        assert again.status_code == 200, again.text
+        assert again.json() == body
+        assert "session_id" not in again.json()
+        again_flags = _flags(again.headers["set-cookie"])
+        assert "httponly" in again_flags
+        assert "secure" not in again_flags
+        assert client.cookies.get(COOKIE) == session_id
+        assert client.get("/api/v1/demo/scenarios").status_code == 200
+        assert _count(client, DemoSession) == 1
+
+        db = _open(client)
+        try:
+            row = db.get(DemoSession, session_id)
+            assert row is not None
+            assert row.csrf_token == token
+        finally:
+            db.close()
+
+
+def test_legacy_login_replay_reuses_existing_token_and_sets_secure_on_https(
+    tmp_path: Path,
+) -> None:
+    """A session that already has a token keeps it. HTTPS marks the cookie Secure."""
+    app = _app(tmp_path / "legacy-https.db")
+    session_id = "00000000-0000-4000-8000-0000000000ac"
+    existing = "legacy-csrf-token-value"
+    with TestClient(app, base_url="https://testserver") as client:
+        db = _open(client)
+        try:
+            person = db.get(Person, PERSON_ID)
+            assert person is not None
+            legacy = {
+                **meta(client.app.state.settings),
+                "person_id": person.id,
+                "person_name": person.name,
+                "session_id": session_id,
+            }
+            canonical = LoginBody().model_dump_json()
+            db.add(
+                DemoSession(
+                    id=session_id,
+                    person_id=person.id,
+                    org_id=ORG_ID,
+                    created_at="2026-01-01T00:00:00Z",
+                    csrf_token=existing,
+                )
+            )
+            db.add(
+                IdempotencyKey(
+                    id="00000000-0000-4000-8000-0000000000ad",
+                    org_id=ORG_ID,
+                    key="legacy-https",
+                    body_hash=hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+                    status_code=200,
+                    response_body=json.dumps(legacy),
+                    created_at="2026-01-01T00:00:00Z",
+                )
+            )
+            db.commit()
+        finally:
+            db.close()
+
+        client.cookies.clear()
+        replay = client.post(
+            "/api/v1/demo/login",
+            json={},
+            headers=_headers("legacy-https"),
+        )
+        assert replay.status_code == 200, replay.text
+        body = replay.json()
+        assert body["csrf_token"] == existing
+        assert "session_id" not in body
+        assert session_id not in replay.text
+        flags = _flags(replay.headers["set-cookie"])
+        assert "httponly" in flags
+        assert "secure" in flags
+        assert client.cookies.get(COOKIE) == session_id
+        assert client.get("/api/v1/demo/scenarios").status_code == 200
+        db = _open(client)
+        try:
+            row = db.get(DemoSession, session_id)
+            assert row is not None
+            assert row.csrf_token == existing
+            cached = db.scalar(
+                select(IdempotencyKey).where(IdempotencyKey.key == "legacy-https")
+            )
+            assert cached is not None
+            saved = json.loads(cached.response_body)
+            assert "session_id" not in saved
+            assert saved["csrf_token"] == existing
+        finally:
+            db.close()
+        assert _count(client, DemoSession) == 1
