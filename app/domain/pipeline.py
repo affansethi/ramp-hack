@@ -262,6 +262,13 @@ def ingest_fetched_record(
         # Amount and OCR feed the cross-check. A new value versions the purchase,
         # supersedes the current result, and queues that check again.
         _refresh_fetched_inputs(session, existing, amount, tax)
+        _stage_audit(
+            session,
+            job.org_id,
+            "deduplicate",
+            existing.id,
+            existing.facts_version,
+        )
         event.purchase_id = job.purchase_id = existing.id
         return
     vendor = record["vendor"] or ""
@@ -372,7 +379,7 @@ def advance_purchase(session: Session, purchase_id: str, ruleset: Ruleset) -> No
     )
     _apply_cross_check(purchase, lines, facts)
     _stage_audit(
-        session, purchase.org_id, "hold_check", purchase.id, purchase.facts_version
+        session, purchase.org_id, "cross_check", purchase.id, purchase.facts_version
     )
     if not purchase.category or purchase.category not in SUPPORTED_CATEGORIES:
         if (
@@ -380,18 +387,41 @@ def advance_purchase(session: Session, purchase_id: str, ruleset: Ruleset) -> No
             and purchase.category is not None
         ):
             _clear_holds(session, purchase, release_version=purchase.facts_version)
+            _stage_audit(
+                session,
+                purchase.org_id,
+                "classify",
+                purchase.id,
+                purchase.facts_version,
+            )
             _item_nhr(session, purchase, ruleset, "NO_SUPPORTED_CATEGORY", lines)
             return
+        _stage_audit(
+            session, purchase.org_id, "classify", purchase.id, purchase.facts_version
+        )
         _set_hold(session, purchase, HoldDecision("MISSING_REQUIRED_FACT", "category"))
         purchase.item_status = "HELD"
         return
+    _stage_audit(
+        session, purchase.org_id, "classify", purchase.id, purchase.facts_version
+    )
     hold = _first_hold(purchase.category, lines, facts, ruleset)
+    _stage_audit(
+        session, purchase.org_id, "hold_check", purchase.id, purchase.facts_version
+    )
     if hold is not None:
         _set_hold(session, purchase, hold)
         purchase.item_status = "HELD"
         return
     _clear_holds(session, purchase, release_version=purchase.facts_version)
     states = _states_for_purchase(lines, facts)
+    _stage_audit(
+        session,
+        purchase.org_id,
+        "jurisdiction_set",
+        purchase.id,
+        purchase.facts_version,
+    )
     if undeclared(states):
         _item_nhr(session, purchase, ruleset, "UNDECLARED_JURISDICTION", lines)
         return
@@ -401,6 +431,9 @@ def advance_purchase(session: Session, purchase_id: str, ruleset: Ruleset) -> No
         )
         purchase.item_status = "HELD"
         return
+    _stage_audit(
+        session, purchase.org_id, "engine_call", purchase.id, purchase.facts_version
+    )
     for line in lines:
         line_states = _states_for_line(line, facts)
         for jurisdiction in line_states:
@@ -408,7 +441,7 @@ def advance_purchase(session: Session, purchase_id: str, ruleset: Ruleset) -> No
                 session, purchase, line, jurisdiction, facts, ruleset, len(states)
             )
     _stage_audit(
-        session, purchase.org_id, "determine", purchase.id, purchase.facts_version
+        session, purchase.org_id, "response_check", purchase.id, purchase.facts_version
     )
     purchase.item_status = "DETERMINED"
 
@@ -505,6 +538,7 @@ def _ingest(
         stored_lines.append(row)
     session.flush()
     _write_facts(session, purchase, document, stored_lines, lines, bill_to)
+    _stage_audit(session, org_id, "deduplicate", purchase.id, purchase.facts_version)
     _stage_audit(session, org_id, "extract", purchase.id, purchase.facts_version)
     _stage_audit(session, org_id, "admit_facts", purchase.id, purchase.facts_version)
     event.purchase_id = purchase.id
@@ -1123,7 +1157,7 @@ def _stage_audit(
     found = session.scalar(
         select(AuditEvent).where(
             AuditEvent.org_id == org_id,
-            AuditEvent.object_type == "purchase",
+            AuditEvent.object_type == object_type,
             AuditEvent.object_id == object_id,
             AuditEvent.command == command,
             AuditEvent.object_version == version,
@@ -1132,9 +1166,17 @@ def _stage_audit(
     if found is not None:
         return
     # Same writer as fact and review commands, so before_hash stays one chain.
+    # The uq_audit_stage partial index is the retry guard; a concurrent retry
+    # that wins the race raises IntegrityError, which means the event exists.
+    from sqlalchemy.exc import IntegrityError
+
     from app.domain.commands import _audit
 
-    _audit(session, org_id, "system", command, "purchase", object_id, version)
+    try:
+        with session.begin_nested():
+            _audit(session, org_id, "system", command, object_type, object_id, version)
+    except IntegrityError:
+        pass
 
 
 def _find_event(session: Session, org_id: str, event_id: str) -> SourceEvent | None:

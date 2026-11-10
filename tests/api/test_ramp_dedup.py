@@ -254,9 +254,9 @@ def test_later_bill_ocr_supersedes_an_approved_card(
         "/api/v1/audit-events", params={"object_id": purchase_id}
     ).json()["audit_events"]
     dedup = [event for event in events if event["command"] == "deduplicate"]
-    assert len(dedup) == 1
-    assert dedup[0]["object_version"] == 2
-    assert dedup[0]["after_hash"] == _after_hash(dedup[0])
+    assert sorted(event["object_version"] for event in dedup) == [1, 2]
+    for event in dedup:
+        assert event["after_hash"] == _after_hash(event)
     _send(client, "evt-bill-ocr", "bills.created", "bill-ocr")
     with client.app.state.ctx.session_factory() as session:
         assert session.scalar(select(func.count()).select_from(Purchase)) == 1
@@ -271,6 +271,14 @@ def test_later_bill_ocr_supersedes_an_approved_card(
             )
             == 1
         )
+    retried = client.get(
+        "/api/v1/audit-events", params={"object_id": purchase_id}
+    ).json()["audit_events"]
+    assert sorted(
+        event["object_version"]
+        for event in retried
+        if event["command"] == "deduplicate"
+    ) == [1, 2]
 
 
 def test_same_ocr_on_an_exact_bill_keeps_the_approval(

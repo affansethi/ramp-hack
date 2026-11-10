@@ -39,6 +39,21 @@ def upgrade_audit_hashes(engine: Engine) -> None:
                 )
 
 
+def upgrade_audit_stage_uniqueness(engine: Engine) -> None:
+    """One stage event per object, command, and input version on retry."""
+    with engine.begin() as connection:
+        if "audit_events" not in inspect(connection).get_table_names():
+            return
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_audit_stage "
+                "ON audit_events (org_id, object_type, object_id, "
+                "command, object_version) "
+                "WHERE actor_id = 'system'"
+            )
+        )
+
+
 def upgrade_fetch_input(engine: Engine) -> None:
     """Keep existing local scratch databases usable before the Alembic baseline."""
     with engine.begin() as connection:
