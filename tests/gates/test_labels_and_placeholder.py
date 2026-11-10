@@ -204,7 +204,10 @@ def test_h5_forbidden_fields_and_one_amount_correction(tmp_path: Path) -> None:
         ).json()
         assert later["facts_version"] > detail["facts_version"]
         current = later["determinations"][0]
-        assert current["id"] != determination["id"] or current["unit_status"] != "APPROVED"
+        assert (
+            current["id"] != determination["id"]
+            or current["unit_status"] != "APPROVED"
+        )
         totals = client.get("/api/v1/totals", headers=_headers("tot")).json()
         message = totals.get("approved_liabilities", {})
         if isinstance(message, dict):
