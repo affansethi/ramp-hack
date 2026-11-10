@@ -44,7 +44,7 @@ Engine amounts are copied byte-for-byte; the app never rounds, adjusts, recomput
 
 ## D9 — Two-phase gating: skeleton first, verified content second
 
-**Amended 2026-11-10:** owner sign-off is replaced by the agent verification protocol in `docs/content-verification.md` (primary sources, evidence files, research plus blind verification by a different lane and model family, `make verify-content` gate). Read "owner-authored" and "signs" below as "verified under that protocol". The two-phase gating itself is unchanged.
+**Amended 2026-11-10:** content activates through owner review **or** agent verification (`docs/content-verification.md`); owner sign-off is no longer required. AF reviewed the rules, rates, rounding basis and filing-basis text on 2026-11-09 (PRs #96, #98); agents audit those with evidence and verify the catalog and goldens. The two-phase gating itself is unchanged.
 
 The S3 catalog, rule entries, rates and golden expected results are owner-authored (RJ drafts, AF signs); agents build structures and evaluators only. To keep parallel work unblocked, signing gates only the dependent stages: skeleton/contracts, extractor scaffolding, the engine evaluator, the simulator and mock UI can all land before sign-off; fact admission, hold checks, end-to-end supported acceptance and the case goldens wait. Consequence: the build order in `docs/architecture.md` §7 follows v2 §15 exactly, and "agents never record expected results" is enforced as a repo rule in `AGENTS.md`.
 
