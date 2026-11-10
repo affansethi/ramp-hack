@@ -1,4 +1,4 @@
-# Spec seed rates. review_status stays candidate until verified under docs/content-verification.md.
+# Spec seed rates. review_status stays candidate until AF reviews them.
 # rate is a decimal string. A float in this file is rejected by the loader.
 rates:
   - jurisdiction: WA
