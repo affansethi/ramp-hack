@@ -34,7 +34,9 @@ def _walk(path: Path) -> str:
 
 def test_planted_bad_string_fails_the_scan(tmp_path: Path) -> None:
     planted = tmp_path / "fixture.txt"
-    planted.write_text("This recovered savings net is a planted fail.", encoding="utf-8")
+    planted.write_text(
+        "This recovered savings net is a planted fail.", encoding="utf-8"
+    )
     blob = planted.read_text(encoding="utf-8")
     assert "recovered" in blob
     production = _walk(ROOT / "app" / "models.py") + _walk(ROOT / "app" / "api")
@@ -63,7 +65,7 @@ def test_schema_gate_still_rejects_float_money() -> None:
             assert not isinstance(column.type, Float)
 
 
-def test_held_purchase_amount_is_not_tax(signed_client) -> None:
+def test_held_purchase_amount_is_not_tax(signed_client) -> None:  # noqa: F811
     _run(signed_client, "case6", "gate-case6")
     totals = signed_client.get("/api/v1/totals", headers=_headers("t")).json()
     assert totals["held"]["count"] == 1
@@ -75,7 +77,7 @@ def test_held_purchase_amount_is_not_tax(signed_client) -> None:
     assert "No approved liabilities" in blob
 
 
-def test_refund_never_reduces_liability(signed_client) -> None:
+def test_refund_never_reduces_liability(signed_client) -> None:  # noqa: F811
     case1 = _run(signed_client, "case1", "gate-liability")
     detail = signed_client.get(
         f"/api/v1/purchases/{case1['purchase_id']}", headers=_headers("g")
