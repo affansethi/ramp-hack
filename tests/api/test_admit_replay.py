@@ -19,8 +19,8 @@ from app.domain import pipeline
 from app.main import create_app
 from app.models import Determination, Document, Fact, Hold, Purchase, PurchaseLine
 from app.worker.poller import poll_once
+from tests.api.test_flow import _activate
 
-ROOT = Path(__file__).resolve().parents[2]
 GOOD_ENV = {
     "DATA_MODE": "synthetic",
     "ENGINE_MODE": "mock_reviewed_ruleset",
@@ -34,17 +34,6 @@ def _headers(key: str | None = None) -> dict[str, str]:
     if key is not None:
         headers["Idempotency-Key"] = key
     return headers
-
-
-def _activate(dest: Path) -> None:
-    dest.mkdir()
-    for name in ("entries.yaml", "rates.yaml", "catalog.yaml"):
-        text = (ROOT / "rules" / name).read_text(encoding="utf-8")
-        text = text.replace("review_status: candidate", "review_status: reviewed")
-        text = text.replace("status: candidate", "status: signed")
-        text = text.replace("reviewed_by:", "reviewed_by: AF")
-        text = text.replace("signed_off_by:", "signed_off_by: AF")
-        (dest / name).write_text(text, encoding="utf-8")
 
 
 @pytest.fixture

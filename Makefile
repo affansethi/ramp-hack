@@ -1,7 +1,7 @@
-.PHONY: check lint typecheck test
+.PHONY: check lint typecheck test verify-content
 
-# One command for lint, type check and tests (AGENTS.md).
-check: lint typecheck test
+# One command for lint, type check, the content gate and tests (AGENTS.md).
+check: lint typecheck verify-content test
 
 lint:
 	ruff check .
@@ -9,6 +9,9 @@ lint:
 
 typecheck:
 	mypy app
+
+verify-content:
+	python -m scripts.verify_content
 
 test:
 	pytest

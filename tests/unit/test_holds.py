@@ -34,11 +34,20 @@ def test_unsigned_catalog_holds_without_an_amount() -> None:
     assert decision.reason == "UNCONFIRMED_REQUIRED_FACT"
 
 
-def test_signed_catalog_holds_a_missing_location() -> None:
-    decision = decide_hold("REMOTE_ACCESS_SAAS", _facts(None), _catalog("signed", "AF"))
+def test_verified_catalog_holds_a_missing_location() -> None:
+    decision = decide_hold(
+        "REMOTE_ACCESS_SAAS", _facts(None), _catalog("verified", None)
+    )
     assert decision is not None
     assert decision.reason == "MISSING_REQUIRED_FACT"
     assert decision.named_fact == "user_location"
+
+
+def test_signed_off_by_does_not_activate_a_catalog() -> None:
+    decision = decide_hold("REMOTE_ACCESS_SAAS", _facts(None), _catalog("signed", "AF"))
+    assert decision is not None
+    assert decision.named_fact == "required_fact_catalog"
+    assert decision.reason == "UNCONFIRMED_REQUIRED_FACT"
 
 
 def _location(**overrides: object) -> str:

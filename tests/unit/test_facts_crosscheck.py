@@ -35,8 +35,7 @@ def _rules(tmp_path: Path, *, signed: bool) -> Ruleset:
     for name in ("entries.yaml", "rates.yaml", "catalog.yaml"):
         text = (ROOT / "rules" / name).read_text(encoding="utf-8")
         if signed and name == "catalog.yaml":
-            text = text.replace("status: candidate", "status: signed")
-            text = text.replace("signed_off_by:", "signed_off_by: AF")
+            text = text.replace("status: candidate", "status: verified")
         (dest / name).write_text(text, encoding="utf-8")
     return load_ruleset(dest)
 

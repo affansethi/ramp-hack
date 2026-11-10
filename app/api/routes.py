@@ -517,7 +517,7 @@ def refund_letter(letter_id: str, request: Request, session: Db) -> dict[str, ob
         "invoice_number": letter.invoice_number,
         "amount": {"value": letter.amount, "currency": "USD"},
         "basis_text": letter.basis_text,
-        "basis_note": "Basis text is not signed. This draft is not sent.",
+        "basis_note": "Basis text is not verified. This draft is not sent.",
         "status": letter.status,
     }
 

@@ -1,9 +1,9 @@
-"""Hold check against a signed catalog. A draft catalog admits nothing."""
+"""Hold check against a verified catalog. A candidate catalog admits nothing."""
 
 from dataclasses import dataclass
 
 from app.domain.moneyutil import parse_decimal
-from app.domain.ruleset import CatalogEntry, catalog_is_signed
+from app.domain.ruleset import CatalogEntry, catalog_is_verified
 
 DECLARED = frozenset({"CA", "WA", "NY"})
 
@@ -25,14 +25,14 @@ class HoldDecision:
 def decide_hold(
     category: str, facts: dict[str, FactView], catalog: tuple[CatalogEntry, ...]
 ) -> HoldDecision | None:
-    signed = [
+    verified = [
         entry
         for entry in catalog
-        if entry.category == category and catalog_is_signed(entry)
+        if entry.category == category and catalog_is_verified(entry)
     ]
-    if not signed:
+    if not verified:
         return HoldDecision("UNCONFIRMED_REQUIRED_FACT", "required_fact_catalog")
-    required = signed[0].required_keys
+    required = verified[0].required_keys
     for key in required:
         fact = facts.get(key)
         if fact is None or not fact.present or fact.value is None:

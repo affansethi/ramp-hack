@@ -1,4 +1,4 @@
-"""Evaluator: unsigned rules never emit an amount. A reviewed rule's string is exact."""
+"""Evaluator: candidate rules emit no amount. A verified rule's string is exact."""
 
 from dataclasses import replace
 from datetime import date
@@ -34,7 +34,7 @@ def _wa_request(**overrides: object) -> EngineLineRequest:
     return EngineLineRequest(**data)
 
 
-def _reviewed_ruleset() -> Ruleset:
+def _verified_ruleset() -> Ruleset:
     rule = RuleEntry(
         id="WA-RAS-001",
         jurisdiction="WA",
@@ -46,9 +46,10 @@ def _reviewed_ruleset() -> Ruleset:
         effective_to=None,
         timing_basis="service_period_start",
         primary_source_url="https://example.test/wa",
-        review_status="reviewed",
-        reviewed_by="AF",
-        reviewed_at="2026-11-01",
+        review_status="verified",
+        reviewed_by=None,
+        reviewed_at=None,
+        evidence_ok=True,
     )
     rate = RateEntry(
         jurisdiction="WA",
@@ -57,8 +58,9 @@ def _reviewed_ruleset() -> Ruleset:
         rate="0.1055",
         quarter="2026Q4",
         source_url="https://example.test/rate",
-        review_status="reviewed",
-        reviewed_by="AF",
+        review_status="verified",
+        reviewed_by=None,
+        evidence_ok=True,
     )
     return Ruleset(rules=(rule,), rates=(rate,), catalog=(), version="test")
 
@@ -79,7 +81,7 @@ def test_inactive_rules_emit_no_amount() -> None:
 
 
 def test_reviewed_rule_copies_a_decimal_string() -> None:
-    result = evaluate_line(_reviewed_ruleset(), _wa_request())
+    result = evaluate_line(_verified_ruleset(), _wa_request())
     assert result.outcome == "supported"
     assert result.expected_tax == "151.92"
     assert result.adjustment_amount == "151.92"
@@ -126,7 +128,7 @@ def test_emit_cents_keeps_exact_cents_and_refuses_to_round() -> None:
 
 
 def test_inexact_product_is_an_error_with_no_amount() -> None:
-    ruleset = _reviewed_ruleset()
+    ruleset = _verified_ruleset()
     ruleset = Ruleset(
         rules=ruleset.rules,
         rates=(replace(ruleset.rates[0], rate="0.08875"),),
@@ -140,14 +142,14 @@ def test_inexact_product_is_an_error_with_no_amount() -> None:
 
 
 def test_inexact_difference_is_an_error_with_no_amount() -> None:
-    result = evaluate_line(_reviewed_ruleset(), _wa_request(tax_charged="1.005"))
+    result = evaluate_line(_verified_ruleset(), _wa_request(tax_charged="1.005"))
     assert result.outcome == "error"
     assert result.error_code == "INEXACT_CENTS"
     _no_amount(result)
 
 
 def test_not_taxable_uses_zero_instead_of_the_rate() -> None:
-    ruleset = _reviewed_ruleset()
+    ruleset = _verified_ruleset()
     ruleset = Ruleset(
         rules=(replace(ruleset.rules[0], calculation="not_taxable"),),
         rates=ruleset.rates,
@@ -167,7 +169,7 @@ def test_not_taxable_uses_zero_instead_of_the_rate() -> None:
 
 
 def test_location_code_na_is_present_and_blank_is_an_error() -> None:
-    ruleset = _reviewed_ruleset()
+    ruleset = _verified_ruleset()
     present = Ruleset(
         rules=ruleset.rules,
         rates=(replace(ruleset.rates[0], location_code="n/a"),),
@@ -191,7 +193,7 @@ def test_location_code_na_is_present_and_blank_is_an_error() -> None:
 
 
 def test_blank_rule_id_or_rate_is_an_error_with_no_amount() -> None:
-    ruleset = _reviewed_ruleset()
+    ruleset = _verified_ruleset()
     no_id = Ruleset(
         rules=(replace(ruleset.rules[0], id=""),),
         rates=ruleset.rates,
@@ -213,7 +215,7 @@ def test_blank_rule_id_or_rate_is_an_error_with_no_amount() -> None:
 
 
 def test_multi_state_net_is_unsupported_with_no_amount() -> None:
-    ruleset = _reviewed_ruleset()
+    ruleset = _verified_ruleset()
     ruleset = Ruleset(
         rules=(
             replace(
@@ -235,9 +237,32 @@ def test_multi_state_net_is_unsupported_with_no_amount() -> None:
     assert result.direction is None
 
 
-def test_reviewed_placeholder_never_activates() -> None:
+def test_signoff_fields_do_not_activate() -> None:
     rule = replace(
-        _reviewed_ruleset().rules[0],
+        _verified_ruleset().rules[0],
+        review_status="reviewed",
+        reviewed_by="AF",
+        evidence_ok=True,
+    )
+    rate = replace(
+        _verified_ruleset().rates[0],
+        review_status="reviewed",
+        reviewed_by="AF",
+        evidence_ok=True,
+    )
+    assert not rule_is_active(rule)
+    assert not rate_is_active(rate)
+
+
+def test_verified_without_evidence_does_not_activate() -> None:
+    rule = replace(_verified_ruleset().rules[0], evidence_ok=False)
+    assert rule.review_status == "verified"
+    assert not rule_is_active(rule)
+
+
+def test_verified_placeholder_never_activates() -> None:
+    rule = replace(
+        _verified_ruleset().rules[0],
         id="PLACEHOLDER:CA-DP-001",
         jurisdiction="CA",
         applies_when="any",
