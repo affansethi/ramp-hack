@@ -6,9 +6,10 @@ copied line stays as it is in rules/, including PLACEHOLDER rules.
 """
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
+import pytest
 import yaml
 
 from app.domain.ruleset import (
@@ -28,6 +29,15 @@ __all__ = [
     "copy_scenario_rules",
     "forbidden_total_field_names",
 ]
+
+
+@pytest.fixture(autouse=True)
+def _reset_csrf_token() -> Iterator[None]:
+    from tests.api.test_flow import reset_csrf
+
+    reset_csrf()
+    yield
+    reset_csrf()
 
 
 def forbidden_total_field_names(payload: object) -> list[str]:

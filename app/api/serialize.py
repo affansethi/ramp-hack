@@ -12,6 +12,8 @@ from app.contracts.money import Money
 from app.domain.moneyutil import money_json, parse_decimal
 from app.models import (
     Determination,
+    Document,
+    Evidence,
     Fact,
     Hold,
     Purchase,
@@ -88,6 +90,14 @@ def purchase_detail(
             )
         ).all()
     )
+    documents = list(
+        session.scalars(
+            select(Document)
+            .where(Document.purchase_id == purchase.id)
+            .order_by(Document.id)
+        ).all()
+    )
+    evidence_by_fact = _evidence_by_fact(session, [fact.id for fact in facts])
     questions = list(
         session.scalars(
             select(Question).where(Question.purchase_id == purchase.id)
@@ -117,6 +127,15 @@ def purchase_detail(
             }
             for line in lines
         ],
+        "documents": [
+            {
+                "id": document.id,
+                "mime_type": document.mime_type,
+                "sha256": document.sha256,
+                "pages": document.pages,
+            }
+            for document in documents
+        ],
         "facts": [
             {
                 "id": fact.id,
@@ -129,6 +148,16 @@ def purchase_detail(
                 "source": fact.source,
                 "version": fact.version,
                 "model_output": purchase.extraction_mode,
+                "evidence": [
+                    {
+                        "id": item.id,
+                        "document_id": item.document_id,
+                        "page": item.page,
+                        "passage": item.passage,
+                        "provenance": item.provenance,
+                    }
+                    for item in evidence_by_fact.get(fact.id, [])
+                ],
             }
             for fact in facts
         ],
@@ -208,6 +237,32 @@ def _supported_money(supported: bool, value: str | None) -> Money | None:
     return Money.model_validate({"value": value, "currency": "USD"})
 
 
+def _evidence_by_fact(
+    session: Session, fact_ids: list[str]
+) -> dict[str, list[Evidence]]:
+    grouped: dict[str, list[Evidence]] = {}
+    if not fact_ids:
+        return grouped
+    rows = session.scalars(
+        select(Evidence).where(Evidence.fact_id.in_(fact_ids)).order_by(Evidence.id)
+    ).all()
+    for row in rows:
+        grouped.setdefault(row.fact_id, []).append(row)
+    return grouped
+
+
+def _rule_source_url(
+    supported: bool, engine_response: dict[str, Any] | None
+) -> str | None:
+    """Copy the link stored with the result. Never read the current ruleset."""
+    if not supported or engine_response is None:
+        return None
+    value = engine_response.get("rule_source_url")
+    if isinstance(value, str):
+        return value
+    return None
+
+
 def _stored_object(raw: str | None) -> dict[str, Any] | None:
     """Parse a stored engine-trail JSON object. Null when the row has none."""
     if not raw:
@@ -229,6 +284,7 @@ def _determination_json(
                 RefundLetterDraft.determination_id == row.id
             )
         )
+    engine_response = _stored_object(row.engine_response)
     body = DeterminationRead(
         id=row.id,
         line_id=row.line_id,
@@ -249,10 +305,12 @@ def _determination_json(
         version=row.version,
         error_code=row.error_code,
         engine_request=_stored_object(row.engine_request),
-        engine_response=_stored_object(row.engine_response),
+        engine_response=engine_response,
         refund_letter_id=letter.id if letter is not None else None,
     )
-    return cast(dict[str, object], body.model_dump(mode="json"))
+    payload = cast(dict[str, object], body.model_dump(mode="json"))
+    payload["rule_source_url"] = _rule_source_url(supported, engine_response)
+    return payload
 
 
 def _actions(queue: str) -> list[str]:

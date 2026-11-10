@@ -11,6 +11,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.api.guards import CSRF_HEADER
+from app.api.routes import COOKIE
 from app.config import load_settings
 from app.main import create_app
 from app.models import Job, Purchase, SourceEvent
@@ -26,8 +28,36 @@ GOOD_ENV = {
 }
 
 
-def _headers(key: str) -> dict[str, str]:
-    return {"Idempotency-Key": key, "X-Requested-With": "taxleak"}
+_csrf_token: str | None = None
+
+
+def reset_csrf() -> None:
+    global _csrf_token
+    _csrf_token = None
+
+
+def _headers(key: str, *, csrf: bool = True) -> dict[str, str]:
+    headers = {"Idempotency-Key": key, "X-Requested-With": "taxleak"}
+    if csrf and _csrf_token:
+        headers[CSRF_HEADER] = _csrf_token
+    return headers
+
+
+def login(client: TestClient, key: str = "login") -> str:
+    """Sign in, keep the HttpOnly cookie, and remember the CSRF token."""
+    global _csrf_token
+    _csrf_token = None
+    response = client.post("/api/v1/demo/login", json={}, headers=_headers(key))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert "session_id" not in body
+    token = body["csrf_token"]
+    assert isinstance(token, str) and token
+    cookie = client.cookies.get(COOKIE)
+    assert isinstance(cookie, str) and cookie != token
+    assert cookie not in response.text
+    _csrf_token = token
+    return token
 
 
 def _activate(dest: Path) -> None:
@@ -42,7 +72,7 @@ def _activate(dest: Path) -> None:
 
 
 @pytest.fixture
-def signed_client(tmp_path: Path) -> TestClient:
+def signed_client(tmp_path: Path, _reset_csrf_token: None) -> TestClient:
     rules = tmp_path / "rules"
     _activate(rules)
     database = tmp_path / "app.db"
@@ -54,11 +84,7 @@ def signed_client(tmp_path: Path) -> TestClient:
     )
     app = create_app(settings, start_worker=False)
     with TestClient(app) as client:
-        login = client.post("/api/v1/demo/login", json={}, headers=_headers("login"))
-        assert login.status_code == 200
-        token = login.json().get("csrf_token")
-        if token:
-            client.headers["X-CSRF-Token"] = token
+        login(client)
         yield client
 
 
@@ -83,12 +109,7 @@ def test_unsigned_catalog_holds_case_1_with_no_tax_amount(tmp_path: Path) -> Non
     )
     app = create_app(settings, start_worker=False)
     with TestClient(app) as client:
-        assert (
-            client.post(
-                "/api/v1/demo/login", json={}, headers=_headers("login")
-            ).status_code
-            == 200
-        )
+        login(client)
         created = _run(client, "case1", "case1")
         detail = client.get(f"/api/v1/purchases/{created['purchase_id']}")
         body = detail.json()
@@ -289,11 +310,8 @@ def test_bad_signature_stores_nothing_payable(tmp_path: Path) -> None:
         assert stored is not None
         assert stored.signature_result == "OK"
         assert poll_once(client.app.state.ctx) == 1
-        client.post("/api/v1/demo/login", json={}, headers=_headers("login-hook"))
-        detail = client.get(
-            f"/api/v1/purchases/{good.json()['purchase_id']}",
-            headers=_headers("read-hook"),
-        ).json()
+        login(client, "login-hook")
+        detail = client.get(f"/api/v1/purchases/{good.json()['purchase_id']}").json()
         assert detail["determinations"] == []
         assert detail["queue"] == "held"
 

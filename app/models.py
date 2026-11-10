@@ -1,6 +1,15 @@
 """Tables for the demo. Money columns are decimal strings. No float, no net figure."""
 
-from sqlalchemy import Boolean, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -40,6 +49,7 @@ class DemoSession(Base):
     person_id: Mapped[str] = mapped_column(ForeignKey("persons.id"))
     org_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"))
     created_at: Mapped[str] = mapped_column(String(32))
+    csrf_token: Mapped[str | None] = mapped_column(String(128), unique=True)
 
 
 class IdempotencyKey(Base):
@@ -303,6 +313,16 @@ class RefundLetterDraft(Base):
 
 class Workpaper(Base):
     __tablename__ = "workpapers"
+    __table_args__ = (
+        Index(
+            "uq_workpaper_ready_fingerprint",
+            "org_id",
+            "fingerprint",
+            unique=True,
+            sqlite_where=text("status = 'READY_TO_FILE_SIMULATED'"),
+            postgresql_where=text("status = 'READY_TO_FILE_SIMULATED'"),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     org_id: Mapped[str] = mapped_column(String(36), index=True)
@@ -313,6 +333,8 @@ class Workpaper(Base):
     status: Mapped[str] = mapped_column(String(40))
     fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     frozen_at: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_after_ready: Mapped[bool] = mapped_column(Boolean, default=False)
+    snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[str] = mapped_column(String(32))
 
 
