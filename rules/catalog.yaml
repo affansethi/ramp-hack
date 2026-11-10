@@ -1,5 +1,5 @@
 # Draft required-fact catalog from Design Spec section 4.1.
-# status stays candidate until AF signs. Unsigned entries do not admit facts.
+# status stays candidate until verified under docs/content-verification.md. Candidate entries do not admit facts.
 entries:
   - category: REMOTE_ACCESS_SAAS
     status: candidate

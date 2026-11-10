@@ -1,4 +1,4 @@
-# Spec seed, not a signature. review_status stays candidate until AF sets reviewed.
+# Spec seed, not verified. review_status stays candidate until verified under docs/content-verification.md.
 # PLACEHOLDER ids never activate. calculation is evaluator arithmetic, not a tax conclusion.
 rules:
   - id: WA-RAS-001
