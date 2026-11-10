@@ -31,7 +31,7 @@ def _headers(key: str) -> dict[str, str]:
 
 def _activate(dest: Path) -> None:
     dest.mkdir()
-    for name in ("entries.yaml", "rates.yaml", "catalog.yaml"):
+    for name in ("entries.yaml", "rates.yaml", "catalog.yaml", "filing-basis.txt"):
         text = (ROOT / "rules" / name).read_text(encoding="utf-8")
         text = text.replace("review_status: candidate", "review_status: reviewed")
         text = text.replace("status: candidate", "status: signed")
