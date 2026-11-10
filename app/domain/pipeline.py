@@ -228,6 +228,7 @@ def ingest_webhook(
         )
     )
     session.flush()
+    _stage_audit(session, org_id, "ingest", event.id, 1, object_type="source_event")
     return IngestResult(None, event.id, False, event.id)
 
 
@@ -237,6 +238,7 @@ def ingest_fetched_record(
     event = session.get(SourceEvent, job.id)
     if event is None:
         raise ValueError("missing source event")
+    _stage_audit(session, job.org_id, "fetch", event.id, 1, object_type="source_event")
     if record["currency_code"] != "USD":
         return
     amount = record["entity_amount"]
@@ -353,6 +355,9 @@ def advance_purchase(session: Session, purchase_id: str, ruleset: Ruleset) -> No
         ).all()
     )
     _apply_cross_check(purchase, lines, facts)
+    _stage_audit(
+        session, purchase.org_id, "hold_check", purchase.id, purchase.facts_version
+    )
     if not purchase.category or purchase.category not in SUPPORTED_CATEGORIES:
         if (
             purchase.category not in SUPPORTED_CATEGORIES
@@ -386,6 +391,9 @@ def advance_purchase(session: Session, purchase_id: str, ruleset: Ruleset) -> No
             _evaluate_one(
                 session, purchase, line, jurisdiction, facts, ruleset, len(states)
             )
+    _stage_audit(
+        session, purchase.org_id, "determine", purchase.id, purchase.facts_version
+    )
     purchase.item_status = "DETERMINED"
 
 
@@ -483,6 +491,8 @@ def _ingest(
         stored_lines.append(row)
     session.flush()
     _write_facts(session, purchase, document, stored_lines, lines, bill_to)
+    _stage_audit(session, org_id, "extract", purchase.id, purchase.facts_version)
+    _stage_audit(session, org_id, "admit_facts", purchase.id, purchase.facts_version)
     event.purchase_id = purchase.id
     event.signature_result = signature_result
     for other in ambiguous:
@@ -1003,7 +1013,12 @@ def _record_ambiguous(
 
 
 def _stage_audit(
-    session: Session, org_id: str, command: str, object_id: str, version: int
+    session: Session,
+    org_id: str,
+    command: str,
+    object_id: str,
+    version: int,
+    object_type: str = "purchase",
 ) -> None:
     found = session.scalar(
         select(AuditEvent).where(
@@ -1021,7 +1036,7 @@ def _stage_audit(
             org_id=org_id,
             actor_id="system",
             command=command[:80],
-            object_type="purchase",
+            object_type=object_type,
             object_id=object_id,
             object_version=version,
             before_hash="",
