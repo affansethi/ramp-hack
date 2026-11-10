@@ -3,7 +3,7 @@
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from app.models import Evidence, Fact, Hold
+from app.models import Determination, Evidence, Fact, Hold, Purchase
 from app.worker.poller import poll_once
 from tests.api.test_flow import signed_client  # noqa: F401
 from tests.api.test_ramp_fetch import _record, _send
@@ -34,8 +34,19 @@ def test_receipt_and_ocr_items_are_decimal_strings(
         assert any(fact.value == "123.450" for fact in amounts)
         assert any(fact.value == "7.250" for fact in taxes)
         assert all(fact.origin == "RAMP_RECORD" for fact in amounts + taxes)
-        evidence = list(session.scalars(select(Evidence)).all())
-        assert evidence
+        ramp_facts = list(
+            session.scalars(select(Fact).where(Fact.origin == "RAMP_RECORD")).all()
+        )
+        assert ramp_facts
+        # Every Ramp-record fact carries its own evidence row, so RG-6 resolves.
+        for fact in ramp_facts:
+            rows = list(
+                session.scalars(
+                    select(Evidence).where(Evidence.fact_id == fact.id)
+                ).all()
+            )
+            assert rows
+            assert all(row.document_id is not None for row in rows)
         holder = session.scalar(select(Fact).where(Fact.field_key == "user_location"))
         assert holder is not None
         assert holder.confirmation == "UNCONFIRMED"
@@ -44,8 +55,17 @@ def test_receipt_and_ocr_items_are_decimal_strings(
             select(Fact).where(Fact.field_key == "merchant_location_mismatch")
         )
         assert mismatch is not None
+        assert mismatch.confirmation == "UNCONFIRMED"
         bill = session.scalar(select(Fact).where(Fact.field_key == "bill_to"))
         assert bill is not None
         assert bill.confirmation == "UNCONFIRMED"
+    # The advance holds: card_holder never confirms use, so no engine call runs.
+    assert poll_once(client.app.state.ctx) == 1
+    with client.app.state.ctx.session_factory() as session:
+        purchase = session.scalar(select(Purchase))
+        assert purchase is not None
+        assert purchase.item_status == "HELD"
         hold = session.scalar(select(Hold).where(Hold.active.is_(True)))
-        assert hold is None or hold.named_fact != "released_by_card_holder"
+        assert hold is not None
+        assert hold.named_fact != "released_by_card_holder"
+        assert list(session.scalars(select(Determination)).all()) == []
