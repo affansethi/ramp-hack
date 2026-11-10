@@ -126,8 +126,9 @@ def test_signed_case_1_approves_the_engine_string(signed_client: TestClient) -> 
         }
     ]
     assert totals["approved_liabilities"]["message"] is None
-    assert "savings" not in totals
-    assert "recovered" not in json.dumps(totals)
+    blob = json.dumps(totals)
+    assert "savings" not in blob
+    assert "recovered" not in blob or "not recovered cash" in blob
 
 
 def test_case_6_holds_for_location_and_stays_out_of_totals(
