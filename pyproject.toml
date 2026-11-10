@@ -11,6 +11,9 @@ src = ["."]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
+[tool.ruff.lint.isort]
+known-third-party = ["alembic"]
+
 [tool.mypy]
 python_version = "3.12"
 mypy_path = "."
