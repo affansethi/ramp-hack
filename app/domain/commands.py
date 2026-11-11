@@ -109,6 +109,7 @@ def add_human_fact(
         "delivery_evidence",
         "line_amount",
         "tax_charged",
+        "service_period",
     ):
         lines = list(
             session.scalars(
@@ -162,6 +163,8 @@ def add_human_fact(
             provenance="human",
         )
     )
+    if field == "service_period":
+        _apply_service_period(session, purchase, target_line, stored_value)
     _supersede_all_current(session, purchase)
     _audit(
         session,
@@ -1289,6 +1292,32 @@ def _split_location(field: str, value: str) -> tuple[str, str | None]:
     if field == "user_location" and "," in value:
         return value.rsplit(",", 1)[1].strip(), value.strip()
     return value.strip(), None
+
+
+def _apply_service_period(
+    session: Session, purchase: Purchase, target_line: str | None, value: str
+) -> None:
+    """Copy a line-scoped service_period fact onto the purchase line.
+
+    The evaluator reads ``PurchaseLine.service_period_start/end``; without
+    this copy a service-period edit would version the fact but leave the
+    engine reading stale line columns.
+    """
+    try:
+        start_raw, end_raw = value.split("/", 1)
+        start = date.fromisoformat(start_raw.strip())
+        end = date.fromisoformat(end_raw.strip())
+    except ValueError:
+        raise DomainError(
+            "BAD_REQUEST", "service_period must be YYYY-MM-DD/YYYY-MM-DD.", 422
+        ) from None
+    if target_line is None:
+        raise DomainError("BAD_REQUEST", "service_period needs a line.", 422)
+    line = session.get(PurchaseLine, target_line)
+    if line is None or line.purchase_id != purchase.id:
+        raise DomainError("NOT_FOUND", "Purchase line not found.", 404)
+    line.service_period_start = start.isoformat()
+    line.service_period_end = end.isoformat()
 
 
 def _purchase(session: Session, org_id: str, purchase_id: str) -> Purchase:
