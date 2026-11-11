@@ -4,23 +4,27 @@ Mutations require Idempotency-Key, the demo header, and the login CSRF token.
 The shared guard is MutationGuardMiddleware, so a route added later inherits it.
 """
 
+import hashlib
 import json
+import logging
 import re
+import time
 from collections.abc import Iterator
 from datetime import date
 from typing import Annotated, Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import APIRouter, Depends, File, Form, Query, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.orm import Session
 from starlette.datastructures import QueryParams
 
+from app.adapters import storage as storage_module
 from app.adapters.ramp import signature_matches
 from app.api.guards import COOKIE, new_csrf_token
-from app.api.idempotency import begin, finish
+from app.api.idempotency import begin, finish, stored_status
 from app.api.serialize import meta, purchase_detail, purchase_summary
 from app.clock import utcnow
 from app.contracts.jobs import read_job
@@ -50,6 +54,7 @@ from app.models import (
     Job,
     JournalEntryDraft,
     LiabilityLine,
+    Organization,
     Person,
     Purchase,
     PurchaseLine,
@@ -358,6 +363,170 @@ async def webhook(request: Request, session: Db) -> JSONResponse:
     }
     finish(session, ORG_ID, key or "", raw.decode("utf-8"), payload)
     return JSONResponse(payload)
+
+
+log = logging.getLogger("taxleak.api")
+
+_MAX_IMPORT_BYTES = 10 * 1024 * 1024
+_MAX_IMPORT_PAGES = 10
+_IMPORT_MIME_TYPES = frozenset(
+    {"application/pdf", "image/png", "image/jpeg", "text/csv"}
+)
+_IMPORT_WINDOW_SECONDS = 60.0
+_IMPORT_MAX_PER_WINDOW = 10
+_import_hits: dict[str, list[float]] = {}
+
+_PNG_MAGIC = bytes((0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A))
+_JPEG_MAGIC = bytes((0xFF, 0xD8, 0xFF))
+_PAGE_RE = re.compile(rb"/Type\s*/Page(?!s)")
+
+
+def _reset_import_rate_limit() -> None:
+    """Clear the in-process import quota. Tests only."""
+    _import_hits.clear()
+
+
+def _check_import_rate_limit(org_id: str) -> None:
+    now = time.monotonic()
+    hits = [
+        hit
+        for hit in _import_hits.get(org_id, [])
+        if now - hit < _IMPORT_WINDOW_SECONDS
+    ]
+    if len(hits) >= _IMPORT_MAX_PER_WINDOW:
+        _import_hits[org_id] = hits
+        raise DomainError("RATE_LIMITED", "Too many imports; retry later.", 429)
+    hits.append(now)
+    _import_hits[org_id] = hits
+
+
+def _check_import_signature(mime_type: str, data: bytes) -> None:
+    """Magic bytes must agree with the declared multipart type."""
+    if mime_type == "application/pdf":
+        matched = data.startswith(b"%PDF")
+    elif mime_type == "image/png":
+        matched = data.startswith(_PNG_MAGIC)
+    elif mime_type == "image/jpeg":
+        matched = data.startswith(_JPEG_MAGIC)
+    else:
+        try:
+            data.decode("utf-8")
+        except UnicodeDecodeError:
+            matched = False
+        else:
+            matched = b"\x00" not in data
+    if not matched:
+        raise DomainError(
+            "FILE_SIGNATURE_MISMATCH",
+            "File bytes disagree with the declared type.",
+            422,
+        )
+
+
+def _import_pages(mime_type: str, data: bytes) -> int:
+    """Page count without a PDF library. Uncountable is a 422, never a zero."""
+    if mime_type != "application/pdf":
+        return 1
+    count = len(_PAGE_RE.findall(data))
+    if count == 0:
+        raise DomainError("UNREADABLE_DOCUMENT", "PDF page count is unreadable.", 422)
+    return count
+
+
+@router.post("/imports", status_code=202)
+async def imports(
+    request: Request,
+    session: Db,
+    entity_id: Annotated[str, Form()],
+    file: Annotated[UploadFile, File()],
+    url: Annotated[str | None, Form()] = None,
+) -> JSONResponse:
+    """Store one synthetic file and enqueue a kind=import job.
+
+    Enqueued with kind=import for #49 to process. Nothing here parses
+    the file, calls the model, or creates a purchase or determination.
+    """
+    viewer = _viewer(request, session)
+    entity = session.get(Organization, entity_id)
+    if entity is None or entity.id != viewer.org_id:
+        raise DomainError("NOT_FOUND", "Entity not found.", 404)
+    data = await file.read()
+    digest = hashlib.sha256(data).hexdigest()
+    declared = (file.content_type or "").split(";")[0].strip().lower()
+    normalized_url = url or None
+    canonical = json.dumps(
+        {
+            "entity_id": entity_id,
+            "sha256": digest,
+            "mime_type": declared,
+            "filename": file.filename,
+            "url": normalized_url,
+        }
+    )
+    key = _key(request)
+    stored = begin(session, viewer.org_id, key, canonical)
+    if stored is not None:
+        status = stored_status(session, viewer.org_id, key or "")
+        return JSONResponse(stored, status_code=status)
+    if normalized_url is not None:
+        raise DomainError(
+            "URL_NOT_ALLOWED",
+            "URL ingestion is not accepted; upload the file.",
+            422,
+        )
+    _check_import_rate_limit(viewer.org_id)
+    if declared not in _IMPORT_MIME_TYPES:
+        raise DomainError(
+            "UNSUPPORTED_FILE_TYPE",
+            "Only PDF, PNG, JPEG, or CSV uploads are accepted.",
+            422,
+        )
+    if len(data) > _MAX_IMPORT_BYTES:
+        raise DomainError("FILE_TOO_LARGE", "Document exceeds 10 MB.", 413)
+    _check_import_signature(declared, data)
+    pages = _import_pages(declared, data)
+    if pages > _MAX_IMPORT_PAGES:
+        raise DomainError("FILE_TOO_LARGE", "Document exceeds 10 pages.", 413)
+    store = getattr(request.app.state, "storage", None) or storage_module
+    placed = store.put_document(data, declared)
+    document = Document(
+        id=str(uuid4()),
+        purchase_id=None,
+        blob_key=placed.key,
+        sha256=digest,
+        mime_type=declared,
+        pages=pages,
+    )
+    session.add(document)
+    job = Job(
+        id=str(uuid4()),
+        org_id=viewer.org_id,
+        kind="import",
+        purchase_id=None,
+        status="QUEUED",
+        lease_until=None,
+        attempts=0,
+        error_code=None,
+        created_at=utcnow(),
+    )
+    session.add(job)
+    session.flush()
+    log.info(
+        "import stored import_id=%s job_id=%s sha256=%s size=%d mime=%s pages=%d",
+        document.id,
+        job.id,
+        digest,
+        len(data),
+        declared,
+        pages,
+    )
+    payload: dict[str, object] = {
+        **meta(request.app.state.settings),
+        "import_id": document.id,
+        "job_id": job.id,
+    }
+    finish(session, viewer.org_id, key or "", canonical, payload, 202)
+    return JSONResponse(payload, status_code=202)
 
 
 @router.get("/jobs/{job_id}")
