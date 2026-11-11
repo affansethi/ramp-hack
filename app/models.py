@@ -67,6 +67,19 @@ class IdempotencyKey(Base):
 
 class AuditEvent(Base):
     __tablename__ = "audit_events"
+    __table_args__ = (
+        Index(
+            "uq_audit_stage",
+            "org_id",
+            "object_type",
+            "object_id",
+            "command",
+            "object_version",
+            unique=True,
+            sqlite_where=text("actor_id = 'system'"),
+            postgresql_where=text("actor_id = 'system'"),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     org_id: Mapped[str] = mapped_column(String(36), index=True)
@@ -357,6 +370,7 @@ class Job(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     org_id: Mapped[str] = mapped_column(String(36), index=True)
     kind: Mapped[str] = mapped_column(String(32))
+    input_payload: Mapped[str | None] = mapped_column(Text, nullable=True)
     purchase_id: Mapped[str | None] = mapped_column(
         String(36), nullable=True, index=True
     )

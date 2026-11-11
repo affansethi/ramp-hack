@@ -19,6 +19,7 @@ from app.main import create_app
 from app.models import (
     AuditEvent,
     Fact,
+    Job,
     Purchase,
     PurchaseLine,
     Workpaper,
@@ -93,6 +94,11 @@ def _run(api: Api, scenario: str, key: str) -> dict[str, object]:
     assert response.status_code == 200, response.text
     body = response.json()
     assert poll_once(api.client.app.state.ctx) == 1 or body["duplicate"] is True
+    if body["purchase_id"] is None:
+        ctx = api.client.app.state.ctx
+        with ctx.session_factory() as session:
+            body["purchase_id"] = session.get(Job, body["job_id"]).purchase_id
+        assert poll_once(ctx) == 1
     return body
 
 

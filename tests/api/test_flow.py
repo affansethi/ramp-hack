@@ -97,6 +97,10 @@ def _run(client: TestClient, scenario: str, key: str) -> dict[str, object]:
     assert response.status_code == 200, response.text
     body = response.json()
     assert poll_once(client.app.state.ctx) == 1 or body["duplicate"] is True
+    if body["purchase_id"] is None:
+        with _open(client) as session:
+            body["purchase_id"] = session.get(Job, body["job_id"]).purchase_id
+        assert poll_once(client.app.state.ctx) == 1
     return body
 
 
@@ -235,13 +239,8 @@ def test_bad_signature_stores_nothing_payable(tmp_path: Path) -> None:
         raw = json.dumps(
             {
                 "id": "evt_bad",
-                "transaction": {
-                    "id": "txn_bad",
-                    "amount": "10.00",
-                    "currency_code": "USD",
-                    "merchant_name": "Synthetic Vendor",
-                    "user_transaction_time": "2026-11-15T00:00:00Z",
-                },
+                "type": "transactions.receipt_added",
+                "data": {"id": "evt_case1"},
             }
         ).encode()
         bad = client.post(
@@ -304,14 +303,17 @@ def test_bad_signature_stores_nothing_payable(tmp_path: Path) -> None:
         assert same_event.status_code == 200, same_event.text
         assert same_event.json()["purchase_id"] == good.json()["purchase_id"]
         assert same_event.json()["duplicate"] is True
-        assert _count(client, Purchase) == 1
+        assert _count(client, Purchase) == 0
         assert _count(client, Job) == 1
         stored = _event(client, "evt_bad")
         assert stored is not None
         assert stored.signature_result == "OK"
         assert poll_once(client.app.state.ctx) == 1
+        with _open(client) as session:
+            purchase_id = session.get(Job, good.json()["job_id"]).purchase_id
+        assert poll_once(client.app.state.ctx) == 1
         login(client, "login-hook")
-        detail = client.get(f"/api/v1/purchases/{good.json()['purchase_id']}").json()
+        detail = client.get(f"/api/v1/purchases/{purchase_id}").json()
         assert detail["determinations"] == []
         assert detail["queue"] == "held"
 
