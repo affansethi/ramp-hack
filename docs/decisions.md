@@ -44,7 +44,7 @@ Engine amounts are copied byte-for-byte; the app never rounds, adjusts, recomput
 
 ## D9 — Two-phase gating: skeleton first, verified content second
 
-**Amended 2026-11-10:** content activates through owner review **or** agent verification (`docs/content-verification.md`); owner sign-off is no longer required. AF reviewed the rules, rates, rounding basis and filing-basis text on 2026-11-09 (PRs #96, #98); agents audit those with evidence and verify the catalog and goldens. The two-phase gating itself is unchanged.
+**Superseded 2026-11-10 by D12** (the agent-activation route below no longer applies). Earlier amendment: content activates through owner review **or** agent verification (`docs/content-verification.md`); owner sign-off is no longer required. AF reviewed the rules, rates, rounding basis and filing-basis text on 2026-11-09 (PRs #96, #98); agents audit those with evidence and verify the catalog and goldens. The two-phase gating itself is unchanged.
 
 The S3 catalog, rule entries, rates and golden expected results are owner-authored (RJ drafts, AF signs); agents build structures and evaluators only. To keep parallel work unblocked, signing gates only the dependent stages: skeleton/contracts, extractor scaffolding, the engine evaluator, the simulator and mock UI can all land before sign-off; fact admission, hold checks, end-to-end supported acceptance and the case goldens wait. Consequence: the build order in `docs/architecture.md` §7 follows v2 §15 exactly, and "agents never record expected results" is enforced as a repo rule in `AGENTS.md`.
 
@@ -55,3 +55,36 @@ The deploy workflow touches live infrastructure (OIDC identity, the production w
 ## D11 — WA Q4 2026 as the demo period
 
 v1.5 used WA Q3 2026; v2 moves to Q4 2026 (2026-10-01 → 2026-12-31) because the Q3 return was already due 2026-11-02. Period assignment is by invoice date, independently of the rule's effective-date selection — which is what makes Case 4 (December 2026 invoice, January 2027 service) a clean timing-isolation test that must route NHR `RULE_TRANSITION_UNRESOLVED`. Consequence: Setup stores the period bounds; boundary invoice dates (2026-09-30, 2026-10-01, 2026-12-31, 2027-01-01) are fixture requirements.
+
+
+## D12 — Spec §3 governs tax-content activation (2026-11-10, AF)
+
+RJ drafts, AF signs, agents never activate. Agents may draft and verify sources (`docs/content-verification.md`), but only owner values (`reviewed_by: AF`, `signed_off_by: AF`) activate an item. Reason: a single accountable signer for tax content; the agent-verification route contradicted the Design Spec and spec §3. PRs #114 and #117 were closed. `AGENTS.md` and `docs/content-verification.md` updated to match. Supersedes the D9 amendment.
+
+## D13 — VARCHAR decimal-string money storage accepted for the demo (2026-11-10, AF)
+
+Spec §4/§5 call for NUMERIC or integer cents. The demo keeps `String(32)` decimal strings. Condition: no SQL query may sum, average, compare or sort on a money column; money arithmetic happens in Python `Decimal` only. Enforced by `tests/gates/test_money_sql.py`. Reason: changing every money mapping before the demo risks the exact-string invariant (RG-3).
+
+## D14 — West US 3 for the App Service and Postgres (2026-11-10, AF)
+
+Spec §9 names West US 2. The F1 App Service quota there was 0, so the plan and web app run in West US 3; managed Postgres will sit next to them in West US 3, resource group `data-rg`. Storage stays in West US 2.
+
+## D15 — Two workflows (2026-11-10, AF)
+
+Spec §11 describes one workflow. Accepted: `ci.yml` (lint, types, tests, gates on pull requests and `main`) and `deploy.yml` (deploy `main`). The `deploy.yml` sanity step now uses Python 3.12 to match the runtime. This is the item that lifts D10's `.github/` freeze for that one line.
+
+## D16 — Fetch failures and ambiguous dedup stay visible (2026-11-10, AF)
+
+Ren's 2026-11-09 decisions are accepted only with visibility: a fetch failure ends as a FAILED job (no new hold reason) and an ambiguous invoice match keeps both purchases with an audit row, but neither may disappear from what the reviewer sees. Both surface on the review list with a status and reason (brief Task 7), never with a tax amount or zero, and never in a total.
+
+## D17 — Item status enum shrinks to three values (2026-11-10, AF)
+
+Spec §5 lists eight item statuses; the build uses `HELD`, `NHR_PRE_DETERMINATION` and `DETERMINED`. The spec shrinks to those three; the other five are not built.
+
+## D18 — Environment variables (2026-11-10, AF)
+
+`RAMP_API_BASE` and `SESSION_SECRET` are dropped from spec §10 (the simulator is in-process; sessions are server-side rows). `MODEL_PROVIDER`, `MODEL_NAME` and `MODEL_API_KEY` are implemented with the provider adapter (brief Task 14), with no default model in code. The spec's `gpt-4.1` target is treated as deprecated and is not pinned; RJ picks and pins a current model.
+
+## D19 — One record run, replay on stage (2026-11-10, AF)
+
+One `LLM_MODE=record` run over synthetic fixtures only, after RJ supplies the pinned model and key; replay recordings must come from that real run, never written by hand. The demo itself stays on replay.
