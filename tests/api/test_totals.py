@@ -194,6 +194,9 @@ def test_approved_refund_does_not_reduce_liabilities(tmp_path: Path) -> None:
         assert letter_id
         letter = _get(client, f"/api/v1/drafts/refund-letters/{letter_id}")
         assert letter["basis_text"] == ""
+        assert (
+            letter["basis_note"] == "Basis text is not signed. This draft is not sent."
+        )
         assert letter["status"] == "DRAFT"
         totals = _get(client, "/api/v1/totals")
         rows = totals["approved_liabilities"]["by_jurisdiction"]
