@@ -116,6 +116,9 @@ def _read_tree(path: Path) -> str:
     for child in sorted(path.rglob("*")):
         if not child.is_file() or "node_modules" in child.parts:
             continue
+        # Test code checks for the banned words; it is not shipped UI copy.
+        if ".test." in child.name or "e2e" in child.parts:
+            continue
         if child.suffix.lower() not in _TEXT_SUFFIXES:
             continue
         parts.append(child.read_text(encoding="utf-8", errors="replace"))

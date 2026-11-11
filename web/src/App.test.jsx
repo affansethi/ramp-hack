@@ -1,155 +1,105 @@
-import { render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, expect, test, vi } from "vitest";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import App from "./App.jsx";
+import ItemView from "./views/ItemView.jsx";
 
-const PURCHASES = {
-  llm_mode: "replay",
-  replay: true,
-  purchases: [
-    {
-      id: "ready-1",
-      vendor: "Synthetic SaaS",
-      invoice_number: "SYN-1",
-      invoice_date: "2026-11-15",
-      item_status: "DETERMINED",
-      queue: "ready",
-      scenario: "case1",
-      extraction_mode: "replay",
-      facts_version: 1,
-      stop_reason: "Engine-supported result waiting for a named reviewer.",
-    },
-    {
-      id: "nhr-1",
-      vendor: "Synthetic Hardware",
-      invoice_number: "SYN-4",
-      invoice_date: "2026-12-15",
-      item_status: "DETERMINED",
-      queue: "needs_human_review",
-      scenario: "case4",
-      extraction_mode: "replay",
-      facts_version: 1,
-      stop_reason: "Needs human review (RULE_TRANSITION_UNRESOLVED). No tax amount.",
-    },
-    {
-      id: "held-1",
-      vendor: "Synthetic Seats",
-      invoice_number: "SYN-6",
-      invoice_date: "2026-11-15",
-      item_status: "DETERMINED",
-      queue: "held",
-      scenario: "case6",
-      extraction_mode: "replay",
-      facts_version: 1,
-      stop_reason: "Held for user_location. No engine call and no tax amount.",
-    },
-    {
-      id: "error-1",
-      vendor: "Synthetic Broken",
-      invoice_number: "SYN-9",
-      invoice_date: "2026-11-15",
-      item_status: "DETERMINED",
-      queue: "error",
-      scenario: "case9",
-      extraction_mode: "replay",
-      facts_version: 1,
-      stop_reason: "Determination error (MALFORMED). No tax amount.",
-    },
-  ],
-  next_cursor: null,
+const META = { data_mode: "synthetic", engine_mode: "mock_reviewed_ruleset", llm_mode: "replay", replay: true };
+const ROW = {
+  id: "p1", vendor: "Synthetic Cloud Co", invoice_number: "SYN-1001", invoice_date: "2026-11-15",
+  queue: "ready", extraction_mode: "replay", stop_reason: "Engine-supported result waiting for a named reviewer.",
+  pending_results: [{ determination_id: "d1", jurisdiction: "WA", direction: "LIABILITY", engine_amount: { value: "151.920", currency: "USD" } }],
 };
-
+const HELD = { id: "p2", vendor: "Synthetic Team Co", invoice_number: "SYN-1006", invoice_date: "2026-11-20", queue: "held", pending_results: [] };
 const TOTALS = {
-  llm_mode: "replay",
-  replay: true,
-  approved_liabilities: {
-    by_jurisdiction: [],
-    message: "No approved liabilities",
-  },
-  refund_candidates: {
-    label: "not recovered cash",
-    count: 0,
-    total: null,
-    rows: [],
-  },
-  held: {
-    count: 1,
-    label: "purchase amount, not tax",
-    purchase_amount: { value: "120.00", currency: "USD" },
-  },
-  open_needs_human_review: { count: 1 },
-  determination_errors: { count: 1 },
-  unreviewed: { by_direction: [] },
+  ...META,
+  approved_liabilities: { by_jurisdiction: [], message: "No approved liabilities" },
+  refund_candidates: { label: "not recovered cash", count: 0, total: null, rows: [] },
+  held: { count: 1, label: "purchase amount, not tax" },
+  open_needs_human_review: { count: 0 }, determination_errors: { count: 0 }, unreviewed: { by_direction: [] },
+  hold_rate: { held_count: 1, item_count: 2, percent: "50" },
 };
 
-const HELD_DETAIL = {
-  llm_mode: "replay",
-  replay: true,
-  id: "held-1",
-  vendor: "Synthetic Seats",
-  queue: "held",
-  purchase_amount: { value: "120.00", currency: "USD" },
-  purchase_amount_note: "purchase amount, not tax",
-  holds: [{ id: "hold-1", reason: "MISSING", named_fact: "user_location", active: true }],
-  questions: [
-    {
-      id: "q-1",
-      fact_key: "user_location",
-      recipient: "spend owner",
-      state: "OPEN",
-      asked_at: "2026-11-10T00:00:00Z",
-    },
-  ],
-  determinations: [],
-};
-
-function mockFetch() {
-  return vi.fn(async (url, options = {}) => {
-    const ok = (body) => ({ ok: true, status: 200, json: async () => body });
-    if (url === "/api/v1/demo/login" && options.method === "POST") {
-      return ok({ csrf_token: "token" });
-    }
-    if (url === "/api/v1/purchases") return ok(PURCHASES);
-    if (url === "/api/v1/totals") return ok(TOTALS);
-    if (url === "/api/v1/purchases/held-1") return ok(HELD_DETAIL);
-    throw new Error(`unexpected fetch: ${url}`);
+function mockApi(calls) {
+  return vi.fn(async (url, init = {}) => {
+    calls.push({ url, init });
+    const path = String(url).replace("/api/v1", "").split("?")[0];
+    const body =
+      path === "/demo/login" ? { ...META, person_name: "Avery Chen", csrf_token: "tok" }
+      : path === "/demo/scenarios" ? { ...META, scenarios: ["case1", "case6"] }
+      : path === "/purchases" ? { ...META, purchases: [ROW, HELD], next_cursor: null }
+      : path === "/totals" ? TOTALS
+      : {};
+    return { ok: true, status: 200, text: async () => JSON.stringify(body) };
   });
 }
 
-beforeEach(() => {
-  vi.stubGlobal("fetch", mockFetch());
-  vi.useFakeTimers({ shouldAdvanceTime: true });
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+  window.location.hash = "";
 });
 
-test("banner, three queue headings, and held row", async () => {
-  render(<App />);
+describe("app shell and queue", () => {
+  it("logs in with JSON and shows the banner, exact amounts and hold rate", async () => {
+    const calls = [];
+    vi.stubGlobal("fetch", mockApi(calls));
+    render(<App />);
+    expect(await screen.findByText("Synthetic demo data")).toBeTruthy();
+    const loginCall = calls.find((c) => String(c.url).endsWith("/demo/login"));
+    expect(loginCall.init.headers["Content-Type"]).toBe("application/json");
+    expect(loginCall.init.headers["Idempotency-Key"]).toBeTruthy();
+    // Exact string from the API, trailing zero kept, never reformatted.
+    expect(await screen.findByText(/151\.920 USD/)).toBeTruthy();
+    expect(screen.getAllByText("unreviewed; not in any total").length).toBe(1);
+    expect(screen.getByTestId("hold-rate").textContent).toContain("1 of 2 items held");
+    // The held row shows no amount.
+    const heldRow = screen.getByText("Synthetic Team Co").closest("tr");
+    expect(heldRow.textContent).not.toMatch(/\d+\.\d{2} USD/);
+  });
+});
 
-  expect(await screen.findByText("Synthetic data • simulated filing")).toBeTruthy();
-  expect(await screen.findByText("Synthetic demo data")).toBeTruthy();
-  expect(await screen.findByText("Recorded extraction: replay")).toBeTruthy();
+describe("item view", () => {
+  it("labels replay extraction even when the server mode is live", async () => {
+    const item = {
+      ...META, llm_mode: "live", replay: false, id: "p1", vendor: "Synthetic Cloud Co", invoice_number: "SYN-1001",
+      queue: "held", extraction_mode: "replay", facts_version: 1, lines: [], documents: [], facts: [],
+      holds: [{ id: "h1", reason: "MISSING_REQUIRED_FACT", named_fact: "user_location", active: true }],
+      questions: [], determinations: [], past_determinations: [], actions: [],
+    };
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, status: 200, text: async () => JSON.stringify(item) })));
+    render(<ItemView id="p1" tick={0} />);
+    await waitFor(() => expect(screen.getAllByText("Recorded extraction (replay)").length).toBeGreaterThan(0));
+    expect(screen.getByText("Held: no tax figure")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
+  });
+});
 
-  expect(await screen.findByText("Approved liabilities")).toBeTruthy();
-  expect(await screen.findByText("No approved liabilities")).toBeTruthy();
-  expect(await screen.findByText("not recovered cash")).toBeTruthy();
+describe("UI copy and money rules (release gates scan these too)", () => {
+  const dir = join(__dirname);
+  const files = [];
+  (function walk(d) {
+    for (const name of readdirSync(d, { withFileTypes: true })) {
+      const p = join(d, name.name);
+      if (name.isDirectory()) walk(p);
+      else if (/\.(jsx?|css)$/.test(name.name) && !name.name.includes(".test.")) files.push(p);
+    }
+  })(dir);
+  const source = files.map((f) => readFileSync(f, "utf8")).join("\n");
 
-  expect(screen.getByRole("heading", { name: "Ready for review" })).toBeTruthy();
-  expect(screen.getByRole("heading", { name: "Needs human review" })).toBeTruthy();
-  expect(
-    screen.getByRole("heading", { name: "Held", level: 2 }),
-  ).toBeTruthy();
-  expect(screen.getByRole("heading", { name: "Errors" })).toBeTruthy();
+  it("never parses or reformats money in the browser", () => {
+    expect(source).not.toMatch(/parseFloat|parseInt|Number\(|toFixed|Intl\.NumberFormat/);
+  });
 
-  expect(await screen.findByText(/Asked: spend owner/)).toBeTruthy();
-  expect(await screen.findByText(/2026-11-10T00:00:00Z/)).toBeTruthy();
-  expect(await screen.findByText(/Reply status: OPEN/)).toBeTruthy();
-  expect((await screen.findAllByText(/120\.00 USD/)).length).toBeGreaterThan(0);
-  expect(
-    (await screen.findAllByText(/purchase amount, not tax/)).length,
-  ).toBeGreaterThan(0);
-  expect(
-    await screen.findByText("Missing fact: user_location"),
-  ).toBeTruthy();
+  it("has no net, savings or recovered copy except the not-recovered-cash note", () => {
+    const stripped = source.replace(/not recovered cash/gi, "");
+    expect(stripped).not.toMatch(/\b(net|savings|recovered)\b/i);
+  });
 
-  await waitFor(() => {
-    expect(screen.queryByText(/live/i)).toBeNull();
+  it("never says filed or paid without simulated on the same line", () => {
+    for (const line of source.split("\n")) {
+      if (/\b(filed|paid)\b/i.test(line)) expect(line).toMatch(/simulated/i);
+    }
   });
 });
