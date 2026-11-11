@@ -6,7 +6,7 @@
   "description": "Tax Leak static React shell (issue #32): banner, queues, separate totals. No tax logic.",
   "scripts": {
     "dev": "vite",
-    "build": "vite build && rm -rf ../app/static && mkdir -p ../app/static && cp -r dist/. ../app/static/",
+    "build": "vite build && node scripts/copy-build.mjs",
     "preview": "vite preview",
     "test": "vitest run"
   },
