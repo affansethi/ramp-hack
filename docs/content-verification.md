@@ -1,6 +1,6 @@
-# Content verification (owner review or agent verification)
+# Content verification (agents draft and verify; AF signs)
 
-Status: active from 2026-11-10. Tax content activates through **either** an owner review **or** the agent verification protocol below. Neither owner is required: an item an owner has not reviewed can still activate through agent verification. Unreviewed, unverified items stay `candidate`, which the app treats as inactive (needs-human-review or a hold, never a guessed amount).
+Status: amended 2026-11-10 by AF (D12). Spec §3 governs: RJ drafts, AF signs, agents never activate tax content. Agents may research sources and run the evidence and blind-verification passes below, but the result is a recommendation for AF, not an activation. Only owner values (`reviewed_by: AF`, `signed_off_by: AF`) activate an item. `agent-verified` is never an active value. Unsigned items stay `candidate`, which the app treats as inactive (needs-human-review or a hold, never a guessed amount).
 
 ## What it covers and the active values
 
@@ -10,7 +10,7 @@ Status: active from 2026-11-10. Tax content activates through **either** an owne
 | Rate records | `rules/rates.yaml` | `review_status: reviewed` + `reviewed_by` |
 | Rounding basis | `rules/rounding.yaml` | `review_status: reviewed` + `reviewed_by` + `source_url`, mode `nearest_cent_half_up` only |
 | Required-fact catalog (S3) | `rules/catalog.yaml` | `status: signed` + `signed_off_by` |
-| Filing-basis text for drafts | `rules/filing-basis.txt` (one `[section]` per route) | written by an owner, or agent-verified with evidence |
+| Filing-basis text for drafts | `rules/filing-basis.txt` (one `[section]` per route) | written or signed by AF |
 | Golden expected results | `fixtures/goldens/` | `status: signed` + `signed_off_by` |
 
 `PLACEHOLDER:` ids never activate, whoever reviewed them.
@@ -19,9 +19,9 @@ Status: active from 2026-11-10. Tax content activates through **either** an owne
 
 An owner (AF) checks the item against its primary source and sets `reviewed_by: AF` (or `signed_off_by: AF`) and the date, as in PRs #96 (rules, rates, rounding) and #98 (filing-basis text). No evidence file is required for an owner-reviewed item. Owner-reviewed items still get an agent evidence audit (see below).
 
-## Route B: agent verification
+## Route B: agent verification (evidence for AF, never activation)
 
-An item activates with `reviewed_by: agent-verified` (or `signed_off_by: agent-verified`) only when all of these hold:
+Agents prepare an item for AF's signature with the steps below. Passing them does not activate anything; AF reviews the evidence and signs.
 
 1. **Primary sources only.** Every factual claim (treatment, effective dates, timing basis, rate, rounding rule, required facts, filing route and deadline) cites an official source: statute, regulation, or published guidance or rate table of the taxing authority, on a domain listed in `rules/evidence/allowlist.yaml`. Secondary sites may help find a source but are never cited.
 2. **Evidence on file.** `rules/evidence/<item>.yaml` records per claim: URL, authority type, pinpoint citation, the exact quoted passage, retrieval date, and a text snapshot under `rules/evidence/snapshots/` with its SHA-256. The quote must appear in the snapshot.
@@ -35,11 +35,11 @@ Item ids for evidence files: the rule id; `rate-<JUR>-<location_code>-<quarter>`
 
 ## Evidence audit of owner-reviewed items
 
-Agents add evidence files for owner-reviewed items too (research plus blind verification, same format). If a primary source contradicts an owner-reviewed value, the agent does not change it: it comments on the issue with the source and quote and opens a correction issue. The owner, or an agent-verified correction, settles it.
+Agents add evidence files for owner-reviewed items too (research plus blind verification, same format). If a primary source contradicts an owner-reviewed value, the agent does not change it: it comments on the issue with the source and quote and opens a correction issue. AF settles it.
 
 ## Goldens
 
-Expected results are derived by hand from the fixture documents and the active rules, rates and rounding basis, independently by two agents on different model families (or written by an owner). Nobody runs the app, engine or tests to produce an expected value. Both derivations must match string for string before `signed_off_by: agent-verified`. NHR and hold goldens carry no amount. CI compares app output with active goldens; a mismatch is a bug, never a reason to edit the golden to match.
+Expected results are derived by hand from the fixture documents and the active rules, rates and rounding basis, independently by two agents on different model families (or written by an owner). Nobody runs the app, engine or tests to produce an expected value. Both derivations must match string for string before they go to AF, who signs (`signed_off_by: AF`). NHR and hold goldens carry no amount. CI compares app output with active goldens; a mismatch is a bug, never a reason to edit the golden to match.
 
 ## Filing-basis text
 

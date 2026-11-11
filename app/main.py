@@ -17,6 +17,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.adapters import storage
 from app.api import health, routes
 from app.api.guards import MutationGuardMiddleware, domain_error_response
 from app.config import Settings, load_settings
@@ -58,6 +59,9 @@ def create_app(
     )
     app.state.settings = settings
     app.state.ctx = ctx
+    # Injected storage port: POST /imports writes through here. Tests replace
+    # it with a fake; nothing outside that route touches Azure credentials.
+    app.state.storage = storage
     app.add_exception_handler(DomainError, _domain_error)
     app.add_middleware(MutationGuardMiddleware)
     app.include_router(health.router)

@@ -1,9 +1,10 @@
 """Ingest a synthetic purchase and advance it until it stops or waits for review."""
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import date
 from hashlib import sha256
+from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -11,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.adapters.extractor import ForbiddenField, parse_extraction
 from app.clock import utcnow
-from app.demo.scenarios import LineInput, Scenario
+from app.demo.scenarios import LineInput, Scenario, get_scenario
 from app.domain.errors import DomainError
 from app.domain.evaluate import EngineLineRequest, evaluate_line
 from app.domain.holds import (
@@ -25,6 +26,7 @@ from app.domain.holds import (
 from app.domain.moneyutil import differs_by_more_than_one_cent, parse_decimal
 from app.domain.ruleset import Ruleset
 from app.models import (
+    AuditEvent,
     Determination,
     Document,
     Evidence,
@@ -54,7 +56,9 @@ class IngestResult:
     source_event_id: str
 
 
-def ingest_scenario(session: Session, scenario: Scenario, org_id: str) -> IngestResult:
+def ingest_scenario(
+    session: Session, scenario: Scenario, org_id: str, *, job: Job | None = None
+) -> IngestResult:
     if scenario.currency != "USD":
         raise DomainError("UNSUPPORTED_CURRENCY", "Only USD is in the demo.", 422)
     # In-memory schema gate. Replay does not open a recording. A forbidden key
@@ -62,7 +66,7 @@ def ingest_scenario(session: Session, scenario: Scenario, org_id: str) -> Ingest
     try:
         parse_extraction(_printed_extraction(scenario))
     except ForbiddenField:
-        return _forbidden_field_job(session, org_id)
+        return _forbidden_field_job(session, org_id, job=job)
     return _ingest(
         session,
         org_id=org_id,
@@ -148,8 +152,14 @@ def _printed_evidence(line: LineInput) -> str:
     return ". ".join(parts)
 
 
-def _forbidden_field_job(session: Session, org_id: str) -> IngestResult:
+def _forbidden_field_job(
+    session: Session, org_id: str, *, job: Job | None = None
+) -> IngestResult:
     """Record the refusal without a purchase, fact, determination, or amount."""
+    if job is not None:
+        job.status = "FAILED"
+        job.error_code = "FORBIDDEN_FIELD"
+        return IngestResult(None, job.id, False, job.id)
     job = Job(
         id=str(uuid4()),
         org_id=org_id,
@@ -171,50 +181,218 @@ def ingest_webhook(
     org_id: str,
     *,
     event_id: str,
-    transaction_id: str,
-    vendor: str,
-    amount: str,
-    currency: str,
-    invoice_date: str,
+    event_type: str,
+    object_id: str,
+    receipt_id: str | None = None,
     signature_ok: bool,
+    demo_scenario: str | None = None,
+    raw_payload: str | None = None,
 ) -> IngestResult:
     if not signature_ok:
         raise DomainError("BAD_SIGNATURE", "X-Ramp-Signature did not match.", 401)
-    if currency != "USD":
-        raise DomainError("UNSUPPORTED_CURRENCY", "Only USD is in the demo.", 422)
-    line = LineInput(
-        description="Ramp transaction, no receipt recording",
-        line_amount=amount,
-        tax_charged=None,
-        tax_jurisdiction=None,
-        service_start=None,
-        service_end=None,
-        delivery_date=None,
-        shipping=None,
-        location_name=None,
-        location_state=None,
-        location_rung=None,
-        seats=None,
-        seats_covered=None,
+    existing = _find_event(session, org_id, event_id)
+    if existing is not None:
+        job = session.get(Job, existing.id)
+        return IngestResult(
+            existing.purchase_id, job.id if job else None, True, existing.id
+        )
+    payload = json.dumps(
+        dict(
+            event_type=event_type,
+            object_id=object_id,
+            receipt_id=receipt_id,
+            demo_scenario=demo_scenario,
+        )
     )
-    return _ingest(
-        session,
+    event = SourceEvent(
+        id=str(uuid4()),
         org_id=org_id,
-        event_id=event_id,
+        source="ramp",
+        external_event_id=event_id,
+        payload_hash=_hash(raw_payload if raw_payload is not None else payload),
         signature_result="OK",
-        payload=event_id,
-        vendor=vendor,
-        invoice_number=f"RAMP-{transaction_id}",
-        invoice_date=invoice_date,
-        entity_amount=amount,
-        ocr_taxes=None,
-        category=None,
-        bill_to="",
-        lines=(line,),
-        demo_scenario=None,
-        extraction_mode="replay_miss",
-        transaction_id=transaction_id,
+        purchase_id=None,
+        created_at=utcnow(),
     )
+    session.add(event)
+    # A fetch job shares its SourceEvent id; its input survives worker restarts.
+    session.add(
+        Job(
+            id=event.id,
+            org_id=org_id,
+            kind="fetch",
+            input_payload=payload,
+            purchase_id=None,
+            status="QUEUED",
+            attempts=0,
+            created_at=utcnow(),
+        )
+    )
+    session.flush()
+    _stage_audit(session, org_id, "ingest", event.id, 1, object_type="source_event")
+    return IngestResult(None, event.id, False, event.id)
+
+
+def ingest_fetched_record(session: Session, job: Job, record: dict[str, Any]) -> None:
+    event = session.get(SourceEvent, job.id)
+    if event is None:
+        raise ValueError("missing source event")
+    _stage_audit(session, job.org_id, "fetch", event.id, 1, object_type="source_event")
+    if record["currency_code"] != "USD":
+        return
+    amount = record["entity_amount"]
+    tax = record["ocr_taxes"]
+    if not isinstance(amount, str) or (tax is not None and not isinstance(tax, str)):
+        raise ValueError("Ramp amounts must be decimal strings")
+    parse_decimal(amount)
+    if tax is not None:
+        parse_decimal(tax)
+    inputs = json.loads(job.input_payload or "{}")
+    transaction_id = inputs["object_id"]
+    if inputs["event_type"] == "bills.created":
+        transaction_id = "bill:" + transaction_id
+    existing = _purchase_for_ramp_object(session, job, transaction_id)
+    if existing is not None:
+        # Amount and OCR feed the cross-check. A new value versions the purchase,
+        # supersedes the current result, and queues that check again.
+        _refresh_fetched_inputs(session, existing, amount, tax, record)
+        _stage_audit(
+            session,
+            job.org_id,
+            "deduplicate",
+            existing.id,
+            existing.facts_version,
+        )
+        event.purchase_id = job.purchase_id = existing.id
+        return
+    vendor = record["vendor"] or ""
+    invoice_number = record["invoice_number"] or ""
+    invoice_date = record["invoice_date"] or ""
+    matched, ambiguous = _invoice_candidates(
+        session, job.org_id, vendor, invoice_number, invoice_date, amount
+    )
+    if matched is not None:
+        _link_exact_invoice(session, matched, event, tax, job=job, record=record)
+        return
+    scenario = (
+        get_scenario(inputs["demo_scenario"]) if inputs.get("demo_scenario") else None
+    )
+    if scenario is not None:
+        # Existing owner-provided demo extraction remains a labeled replay.
+        result = ingest_scenario(
+            session,
+            replace(scenario, entity_amount=amount, ocr_taxes=tax),
+            job.org_id,
+            job=job,
+        )
+    else:
+        line = LineInput(
+            "Simulated Ramp record",
+            amount,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        result = _ingest(
+            session,
+            org_id=job.org_id,
+            event_id=event.external_event_id,
+            signature_result="OK",
+            payload=job.input_payload or "",
+            vendor=record["vendor"] or "",
+            invoice_number=record["invoice_number"] or "",
+            invoice_date=record["invoice_date"] or "",
+            entity_amount=amount,
+            ocr_taxes=tax,
+            category=None,
+            bill_to="",
+            lines=(line,),
+            demo_scenario=None,
+            extraction_mode="replay_miss",
+            transaction_id=transaction_id,
+        )
+    event.purchase_id = job.purchase_id = result.purchase_id
+    if result.purchase_id is not None:
+        for other in ambiguous:
+            _record_ambiguous(session, job.org_id, result.purchase_id, other.id)
+        if scenario is None:
+            purchase = session.get(Purchase, result.purchase_id)
+            document = session.scalar(
+                select(Document).where(Document.purchase_id == result.purchase_id)
+            )
+            if purchase is not None and document is not None:
+                pending = _pending_ramp_evidence(session, purchase, record)
+                _apply_ramp_evidence(session, purchase, pending)
+
+
+def _purchase_for_ramp_object(
+    session: Session, job: Job, transaction_id: str
+) -> Purchase | None:
+    """The canonical purchase for a Ramp card or bill, including a linked one.
+
+    A merged purchase keeps one ramp_transaction_id, but every fetch job that
+    resolved to it records its purchase_id, so a later event for the other
+    linked object resolves here instead of creating a second purchase.
+    """
+    direct = session.scalar(
+        select(Purchase).where(
+            Purchase.org_id == job.org_id,
+            Purchase.ramp_transaction_id == transaction_id,
+        )
+    )
+    if direct is not None:
+        return direct
+    prior = session.scalars(
+        select(Job)
+        .where(
+            Job.org_id == job.org_id,
+            Job.kind == "fetch",
+            Job.id != job.id,
+            Job.purchase_id.is_not(None),
+        )
+        .order_by(Job.created_at)
+    ).all()
+    for row in prior:
+        inputs = json.loads(row.input_payload or "{}")
+        object_id = inputs.get("object_id")
+        if not object_id:
+            continue
+        if inputs.get("event_type") == "bills.created":
+            object_id = "bill:" + object_id
+        if object_id == transaction_id and row.purchase_id is not None:
+            return session.get(Purchase, row.purchase_id)
+    return None
+
+
+def _refresh_fetched_inputs(
+    session: Session,
+    purchase: Purchase,
+    amount: str,
+    tax: str | None,
+    record: dict[str, Any] | None = None,
+) -> None:
+    changed = False
+    if purchase.ramp_entity_amount != amount:
+        purchase.ramp_entity_amount = amount
+        changed = True
+    if purchase.ramp_ocr_taxes != tax:
+        purchase.ramp_ocr_taxes = tax
+        changed = True
+    pending = _pending_ramp_evidence(session, purchase, record) if record else []
+    if not changed and not pending:
+        return
+    purchase.facts_version += 1
+    _supersede_current(session, purchase)
+    _apply_ramp_evidence(session, purchase, pending)
+    _enqueue(session, purchase.org_id, purchase.id)
 
 
 def advance_purchase(session: Session, purchase_id: str, ruleset: Ruleset) -> None:
@@ -247,24 +425,50 @@ def advance_purchase(session: Session, purchase_id: str, ruleset: Ruleset) -> No
         ).all()
     )
     _apply_cross_check(purchase, lines, facts)
+    _stage_audit(
+        session, purchase.org_id, "cross_check", purchase.id, purchase.facts_version
+    )
     if not purchase.category or purchase.category not in SUPPORTED_CATEGORIES:
         if (
             purchase.category not in SUPPORTED_CATEGORIES
             and purchase.category is not None
         ):
             _clear_holds(session, purchase, release_version=purchase.facts_version)
+            _stage_audit(
+                session,
+                purchase.org_id,
+                "classify",
+                purchase.id,
+                purchase.facts_version,
+            )
             _item_nhr(session, purchase, ruleset, "NO_SUPPORTED_CATEGORY", lines)
             return
+        _stage_audit(
+            session, purchase.org_id, "classify", purchase.id, purchase.facts_version
+        )
         _set_hold(session, purchase, HoldDecision("MISSING_REQUIRED_FACT", "category"))
         purchase.item_status = "HELD"
         return
+    _stage_audit(
+        session, purchase.org_id, "classify", purchase.id, purchase.facts_version
+    )
     hold = _first_hold(purchase.category, lines, facts, ruleset)
+    _stage_audit(
+        session, purchase.org_id, "hold_check", purchase.id, purchase.facts_version
+    )
     if hold is not None:
         _set_hold(session, purchase, hold)
         purchase.item_status = "HELD"
         return
     _clear_holds(session, purchase, release_version=purchase.facts_version)
     states = _states_for_purchase(lines, facts)
+    _stage_audit(
+        session,
+        purchase.org_id,
+        "jurisdiction_set",
+        purchase.id,
+        purchase.facts_version,
+    )
     if undeclared(states):
         _item_nhr(session, purchase, ruleset, "UNDECLARED_JURISDICTION", lines)
         return
@@ -274,12 +478,18 @@ def advance_purchase(session: Session, purchase_id: str, ruleset: Ruleset) -> No
         )
         purchase.item_status = "HELD"
         return
+    _stage_audit(
+        session, purchase.org_id, "engine_call", purchase.id, purchase.facts_version
+    )
     for line in lines:
         line_states = _states_for_line(line, facts)
         for jurisdiction in line_states:
             _evaluate_one(
                 session, purchase, line, jurisdiction, facts, ruleset, len(states)
             )
+    _stage_audit(
+        session, purchase.org_id, "response_check", purchase.id, purchase.facts_version
+    )
     purchase.item_status = "DETERMINED"
 
 
@@ -320,6 +530,13 @@ def _ingest(
         )
         session.add(event)
         session.flush()
+    matched, ambiguous = _invoice_candidates(
+        session, org_id, vendor, invoice_number, invoice_date, entity_amount
+    )
+    if matched is not None:
+        event.signature_result = signature_result
+        linked = _link_exact_invoice(session, matched, event, ocr_taxes, job=None)
+        return IngestResult(matched.id, linked.id, True, event.id)
     purchase = Purchase(
         id=str(uuid4()),
         org_id=org_id,
@@ -368,8 +585,13 @@ def _ingest(
         stored_lines.append(row)
     session.flush()
     _write_facts(session, purchase, document, stored_lines, lines, bill_to)
+    _stage_audit(session, org_id, "deduplicate", purchase.id, purchase.facts_version)
+    _stage_audit(session, org_id, "extract", purchase.id, purchase.facts_version)
+    _stage_audit(session, org_id, "admit_facts", purchase.id, purchase.facts_version)
     event.purchase_id = purchase.id
     event.signature_result = signature_result
+    for other in ambiguous:
+        _record_ambiguous(session, org_id, purchase.id, other.id)
     job = _enqueue(session, org_id, purchase.id)
     return IngestResult(purchase.id, job.id, False, event.id)
 
@@ -391,6 +613,9 @@ def _write_facts(
         header["delivery_method"] = "electronic"
         header["access_model"] = "remote"
     for key, value in header.items():
+        if not value:
+            # Missing is not an empty string: no fact, so the hold check names it.
+            continue
         _add_fact(
             session,
             purchase,
@@ -536,6 +761,177 @@ def _write_facts(
             )
 
 
+@dataclass(frozen=True)
+class _RampEvidence:
+    key: str
+    line_id: str | None
+    value: str
+    confirmation: str
+    rung: int | None
+    passage: str
+
+
+# Ramp receipt and OCR items are sourced evidence for review and the
+# cross-check (Tech Spec v2 §8). They use their own keys so a Ramp value never
+# silently replaces an admitted line_amount or tax_charged fact.
+_RECEIPT_FIELDS = (
+    ("description", "receipt_line_description", False),
+    ("total", "receipt_line_amount", True),
+    ("tax", "receipt_line_tax", True),
+)
+_OCR_FIELDS = (
+    ("description", "ocr_line_description", False),
+    ("amount", "ocr_line_amount", True),
+    ("tax_amount", "ocr_line_tax", True),
+)
+
+
+def _ramp_evidence(record: dict[str, Any], line_ids: list[str]) -> list[_RampEvidence]:
+    found: list[_RampEvidence] = []
+
+    def items(name: str, fields: tuple[tuple[str, str, bool], ...], label: str) -> None:
+        for index, item in enumerate(record.get(name) or []):
+            if not isinstance(item, dict):
+                continue
+            line_id = line_ids[index] if index < len(line_ids) else None
+            for source_key, key, money in fields:
+                value = item.get(source_key)
+                if not isinstance(value, str) or not value.strip():
+                    continue
+                if money:
+                    parse_decimal(value)  # decimal string or refuse, never float
+                found.append(
+                    _RampEvidence(
+                        key,
+                        line_id,
+                        value,
+                        "UNCONFIRMED",
+                        None,
+                        f"{label} item {index + 1} {source_key} {value}",
+                    )
+                )
+
+    items("receipt_items", _RECEIPT_FIELDS, "Ramp merchant_data.receipt")
+    items("ocr_line_items", _OCR_FIELDS, "Ramp receipt OCR")
+    holder = record.get("card_holder")
+    if isinstance(holder, str) and holder.strip():
+        found.append(
+            _RampEvidence(
+                "user_location",
+                None,
+                holder.strip(),
+                "UNCONFIRMED",
+                5,
+                "card_holder is rung 5 and does not confirm use",
+            )
+        )
+    if record.get("merchant_location_mismatch"):
+        found.append(
+            _RampEvidence(
+                "merchant_location_mismatch",
+                None,
+                "true",
+                "UNCONFIRMED",
+                None,
+                "Merchant-location mismatch is a flag only, not a location fact",
+            )
+        )
+    bill_to = record.get("bill_to")
+    if isinstance(bill_to, str) and bill_to.strip():
+        found.append(
+            _RampEvidence(
+                "bill_to",
+                None,
+                bill_to.strip(),
+                "UNCONFIRMED",
+                None,
+                "Bill-to is context only and does not confirm use or delivery.",
+            )
+        )
+    return found
+
+
+def _pending_ramp_evidence(
+    session: Session, purchase: Purchase, record: dict[str, Any]
+) -> list[tuple[_RampEvidence, Fact | None]]:
+    """Ramp evidence that is new or changed, with the fact each one replaces."""
+    line_ids = list(
+        session.scalars(
+            select(PurchaseLine.id)
+            .where(PurchaseLine.purchase_id == purchase.id)
+            .order_by(PurchaseLine.line_number)
+        ).all()
+    )
+    current = list(
+        session.scalars(
+            select(Fact).where(
+                Fact.purchase_id == purchase.id,
+                Fact.origin == "RAMP_RECORD",
+                Fact.is_current.is_(True),
+            )
+        ).all()
+    )
+    pending: list[tuple[_RampEvidence, Fact | None]] = []
+    for item in _ramp_evidence(record, line_ids):
+        prior = next(
+            (
+                fact
+                for fact in current
+                if fact.field_key == item.key
+                and fact.line_id == item.line_id
+                and fact.evidence_rung == item.rung
+            ),
+            None,
+        )
+        if prior is not None and prior.value == item.value:
+            continue
+        pending.append((item, prior))
+    return pending
+
+
+def _apply_ramp_evidence(
+    session: Session,
+    purchase: Purchase,
+    pending: list[tuple[_RampEvidence, Fact | None]],
+) -> None:
+    if not pending:
+        return
+    document = session.scalar(
+        select(Document).where(Document.purchase_id == purchase.id)
+    )
+    for item, prior in pending:
+        if prior is not None:
+            prior.is_current = False
+        fact = Fact(
+            id=str(uuid4()),
+            org_id=purchase.org_id,
+            purchase_id=purchase.id,
+            line_id=item.line_id,
+            field_key=item.key,
+            value=item.value,
+            origin="RAMP_RECORD",
+            source="ramp transaction",
+            evidence_rung=item.rung,
+            confirmation=item.confirmation,
+            version=purchase.facts_version,
+            is_current=True,
+            supersedes=prior.id if prior is not None else None,
+        )
+        session.add(fact)
+        session.flush()
+        # RG-6: every Ramp-record fact resolves to an evidence row.
+        session.add(
+            Evidence(
+                id=str(uuid4()),
+                fact_id=fact.id,
+                document_id=document.id if document is not None else None,
+                page=1,
+                passage=item.passage,
+                provenance="ramp_record",
+            )
+        )
+
+
 def _add_fact(
     session: Session,
     purchase: Purchase,
@@ -584,7 +980,8 @@ def _apply_cross_check(
     purchase: Purchase, lines: list[PurchaseLine], facts: list[Fact]
 ) -> None:
     line_total = sum(
-        (parse_decimal(line.line_amount) for line in lines), start=parse_decimal("0")
+        (parse_decimal(_admitted_line_amount(line, facts)) for line in lines),
+        start=parse_decimal("0"),
     )
     if purchase.ramp_entity_amount and differs_by_more_than_one_cent(
         purchase.ramp_entity_amount, f"{line_total:.2f}"
@@ -606,6 +1003,33 @@ def _apply_cross_check(
         for fact in facts:
             if fact.field_key == "tax_charged":
                 fact.confirmation = "UNCONFIRMED"
+
+
+def _admitted_line_amount(line: PurchaseLine, facts: list[Fact]) -> str:
+    """The line's current line-scoped line_amount fact, else the stored line.
+
+    A sourced correction (H5) supersedes the earlier fact, so the cross-check
+    and the engine read the corrected amount, never a stale line column.
+    """
+    for fact in facts:
+        if (
+            fact.field_key == "line_amount"
+            and fact.line_id == line.id
+            and fact.value is not None
+            and fact.value.strip()
+        ):
+            return fact.value
+    return line.line_amount
+
+
+def _confirmed_fact(views: dict[str, FactView], key: str) -> str | None:
+    """A confirmed, non-blank fact value for the engine request, else None."""
+    fact = views.get(key)
+    if fact is None or fact.confirmation != "CONFIRMED":
+        return None
+    if fact.value is None or not fact.value.strip():
+        return None
+    return fact.value
 
 
 def _first_hold(
@@ -666,7 +1090,7 @@ def _evaluate_one(
         invoice_date=date.fromisoformat(purchase.invoice_date),
         service_period_start=_optional_date(line.service_period_start),
         delivery_date=_optional_date(line.delivery_date),
-        line_amount=line.line_amount,
+        line_amount=_confirmed_fact(views, "line_amount") or line.line_amount,
         tax_charged=tax.value,
         shipping=line.shipping_amount,
         location_name=line.location_name or "",
@@ -837,6 +1261,180 @@ def _enqueue(session: Session, org_id: str, purchase_id: str) -> Job:
     session.add(job)
     session.flush()
     return job
+
+
+def _link_exact_invoice(
+    session: Session,
+    purchase: Purchase,
+    event: SourceEvent,
+    ocr_taxes: str | None,
+    *,
+    job: Job | None,
+    record: dict[str, Any] | None = None,
+) -> Job:
+    """Keep both source events on one purchase and reconcile new receipt evidence."""
+    event.purchase_id = purchase.id
+    before = purchase.facts_version
+    _note_ocr_evidence(session, purchase, ocr_taxes)
+    pending = _pending_ramp_evidence(session, purchase, record) if record else []
+    if pending:
+        if purchase.facts_version == before:
+            # New evidence versions the purchase and supersedes current results.
+            purchase.facts_version += 1
+            _supersede_current(session, purchase)
+        _apply_ramp_evidence(session, purchase, pending)
+    _stage_audit(
+        session,
+        purchase.org_id,
+        "deduplicate",
+        purchase.id,
+        purchase.facts_version,
+    )
+    # Queue before the fetch job stores purchase_id. A running fetch is not
+    # the advance that reruns cross-check.
+    queued = _enqueue(session, purchase.org_id, purchase.id)
+    if job is not None:
+        job.purchase_id = purchase.id
+    return queued
+
+
+def _note_ocr_evidence(
+    session: Session, purchase: Purchase, ocr_taxes: str | None
+) -> None:
+    """Store a changed OCR tax and drop results keyed by the previous version.
+
+    A missing tax line does not erase a tax already stored. Equal decimals keep
+    the original sourced string and the current approval.
+    """
+    if ocr_taxes is None:
+        return
+    stored = purchase.ramp_ocr_taxes
+    if stored is not None and parse_decimal(stored) == parse_decimal(ocr_taxes):
+        return
+    purchase.ramp_ocr_taxes = ocr_taxes
+    purchase.facts_version += 1
+    # Bump first so current rows, including approvals, no longer match.
+    _supersede_current(session, purchase)
+
+
+def _invoice_candidates(
+    session: Session,
+    org_id: str,
+    vendor: str,
+    invoice_number: str,
+    invoice_date: str,
+    amount: str,
+) -> tuple[Purchase | None, list[Purchase]]:
+    if not vendor.strip() or not invoice_number.strip():
+        return None, []
+    rows = list(
+        session.scalars(
+            select(Purchase)
+            .where(Purchase.org_id == org_id)
+            .order_by(Purchase.created_at, Purchase.id)
+        ).all()
+    )
+    same = [
+        row
+        for row in rows
+        if row.entity_name == ENTITY_NAME
+        and row.vendor.strip().casefold() == vendor.strip().casefold()
+        and row.invoice_number.strip().casefold() == invoice_number.strip().casefold()
+    ]
+    exact = [
+        row
+        for row in same
+        if _invoice_dates_match(row.invoice_date, invoice_date)
+        and _amount_equal(row, amount)
+    ]
+    matched = exact[0] if exact else None
+    ambiguous = [row for row in same if matched is None or row.id != matched.id]
+    return matched, ambiguous
+
+
+def _invoice_dates_match(stored: str, incoming: str) -> bool:
+    """Both sides need a real calendar date. Two blanks are not the same date."""
+    left = _present_invoice_date(stored)
+    right = _present_invoice_date(incoming)
+    if left is None or right is None:
+        return False
+    return left == right
+
+
+def _present_invoice_date(value: str) -> date | None:
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        parsed = date.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.isoformat() != text:
+        return None
+    return parsed
+
+
+def _amount_equal(purchase: Purchase, amount: str) -> bool:
+    stored = purchase.ramp_entity_amount
+    if stored is None:
+        return False
+    return parse_decimal(stored) == parse_decimal(amount)
+
+
+def _record_ambiguous(
+    session: Session, org_id: str, left_id: str, right_id: str
+) -> None:
+    left = session.get(Purchase, left_id)
+    right = session.get(Purchase, right_id)
+    if left is None or right is None:
+        return
+    _stage_audit(
+        session,
+        org_id,
+        f"ambiguous_invoice_match:{right.id}",
+        left.id,
+        left.facts_version,
+    )
+    _stage_audit(
+        session,
+        org_id,
+        f"ambiguous_invoice_match:{left.id}",
+        right.id,
+        right.facts_version,
+    )
+
+
+def _stage_audit(
+    session: Session,
+    org_id: str,
+    command: str,
+    object_id: str,
+    version: int,
+    object_type: str = "purchase",
+) -> None:
+    found = session.scalar(
+        select(AuditEvent).where(
+            AuditEvent.org_id == org_id,
+            AuditEvent.object_type == object_type,
+            AuditEvent.object_id == object_id,
+            AuditEvent.command == command,
+            AuditEvent.object_version == version,
+        )
+    )
+    if found is not None:
+        return
+    # Same writer as fact and review commands, so before_hash stays one chain.
+    # The uq_audit_stage partial index is the retry guard; a concurrent retry
+    # that wins the race raises IntegrityError, which means the event exists.
+    from sqlalchemy.exc import IntegrityError
+
+    from app.domain.commands import _audit
+
+    try:
+        with session.begin_nested():
+            _audit(session, org_id, "system", command, object_type, object_id, version)
+    except IntegrityError:
+        pass
 
 
 def _find_event(session: Session, org_id: str, event_id: str) -> SourceEvent | None:
