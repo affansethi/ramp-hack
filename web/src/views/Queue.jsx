@@ -28,16 +28,19 @@ export default function Queue({ tick }) {
   if (direction) params.direction = direction;
   const { data, error } = usePoll(
     async () => {
-      const [rows, totals] = await Promise.all([
+      const [rows, totals, failed] = await Promise.all([
         allPurchases(params),
         get("/totals"),
+        get("/jobs", { status: "FAILED" }),
       ]);
-      return { rows, totals };
+      return { rows, totals, failed: failed.jobs || [] };
     },
     [label, direction, tick],
   );
   const rows = data?.rows || [];
   const holdRate = data?.totals?.hold_rate;
+  const failed = data?.failed || [];
+  const duplicates = rows.filter((row) => (row.possible_duplicate_ids || []).length);
 
   return (
     <section aria-label="Review queue">
@@ -68,6 +71,20 @@ export default function Queue({ tick }) {
         ) : null}
       </div>
       {error ? <p className="error">{error.message}</p> : null}
+      {failed.length || duplicates.length ? (
+        <div className="warn" data-testid="visibility">
+          <strong>Needs attention (no tax figures):</strong> {failed.length} failed fetch
+          {failed.length === 1 ? "" : "es"}, {duplicates.length} possible duplicate
+          {duplicates.length === 1 ? "" : "s"}
+          <ul>
+            {failed.map((job) => (
+              <li key={job.id}>
+                Failed fetch of {job.event_type} {job.ramp_object_id} after {job.attempts} attempts: {job.reason}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
       {rows.length === 0 ? (
         <p>No purchases yet. Use Simulate swipe to send a synthetic Ramp event.</p>
       ) : (
@@ -109,6 +126,9 @@ export default function Queue({ tick }) {
                   <td>{pending.map((p) => p.direction).filter(Boolean).join(", ") || "—"}</td>
                   <td>
                     {statusLabel(row)}
+                    {(row.possible_duplicate_ids || []).length ? (
+                      <span className="tag warn">Possible duplicate</span>
+                    ) : null}
                     {row.stop_reason ? <div className="sub">{row.stop_reason}</div> : null}
                   </td>
                 </tr>

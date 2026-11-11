@@ -76,6 +76,8 @@ def purchase_summary(session: Session, purchase: Purchase) -> dict[str, object]:
         "facts_version": purchase.facts_version,
         "stop_reason": stop_reason(holds, determinations),
         "pending_results": _pending_results(holds, determinations),
+        # Ambiguous invoice match (D16): both purchases stay, flagged here.
+        "possible_duplicate_ids": _possible_duplicate_ids(session, purchase),
     }
 
 
