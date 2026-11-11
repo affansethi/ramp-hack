@@ -2,22 +2,28 @@
 
 import json
 import logging
+import os
 import threading
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 from sqlalchemy import and_, or_, select, update
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
+from app.adapters.extractor import PROMPT_VERSION, SCHEMA_VERSION
 from app.clock import utcnow
 from app.context import AppContext
-from app.domain.pipeline import advance_purchase, ingest_fetched_record
+from app.domain.pipeline import advance_purchase, ingest_fetched_record, ingest_import
 from app.domain.ruleset import load_ruleset
-from app.models import Job
+from app.models import Document, IdempotencyKey, Job
 
 log = logging.getLogger("taxleak.worker")
 _lock = threading.Lock()
+_IMPORT_RECORDINGS = (
+    Path(__file__).resolve().parents[2] / "fixtures/recordings/imports.json"
+)
 
 
 class JobPoller:
@@ -87,10 +93,56 @@ def _fetch(ctx: AppContext, session: Session, job: Job) -> None:
     ingest_fetched_record(session, job, record)
 
 
-# Fetch and import handlers can be added here without changing the claim query.
+def _import(ctx: AppContext, session: Session, job: Job) -> None:
+    del ctx  # Import admission never advances the purchase or loads tax rules.
+    # Intake predates input_payload: its committed 202 response is the durable,
+    # org-scoped association between this job and the stored document.
+    receipts = session.scalars(
+        select(IdempotencyKey).where(
+            IdempotencyKey.org_id == job.org_id, IdempotencyKey.status_code == 202
+        )
+    )
+    import_id = None
+    for receipt in receipts:
+        response = json.loads(receipt.response_body)
+        if response.get("job_id") == job.id:
+            import_id = response.get("import_id")
+            break
+    document = session.get(Document, import_id) if isinstance(import_id, str) else None
+    if document is None:
+        raise ValueError("import job has no stored document")
+    if document.purchase_id is not None:
+        # Completed admission is a no-op after lease recovery.
+        job.purchase_id = document.purchase_id
+        return
+    ingest_import(session, job, document, _load_import_replay(document))
+
+
+def _load_import_replay(document: Document) -> object | None:
+    """Read raw recorded output, retaining identity metadata for admission.
+
+    The optional manifest maps the existing extractor cache keys to payloads.
+    No recording is supplied or synthesized here. Provider/model must be pinned
+    by the owner; an absent manifest, pin, or key is a replay miss.
+    """
+    provider = os.environ.get("MODEL_PROVIDER")
+    model = os.environ.get("MODEL_NAME")
+    if not provider or not model:
+        return None
+    try:
+        saved = json.loads(_IMPORT_RECORDINGS.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    if not isinstance(saved, dict):
+        raise ValueError("import replay manifest must be an object")
+    key = f"{document.sha256}:{provider}:{model}:{PROMPT_VERSION}:{SCHEMA_VERSION}"
+    return saved.get(key)
+
+
 _HANDLERS: dict[str, Callable[[AppContext, Session, Job], None]] = {
     "advance": _advance,
     "fetch": _fetch,
+    "import": _import,
 }
 
 

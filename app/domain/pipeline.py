@@ -1,6 +1,7 @@
 """Ingest a synthetic purchase and advance it until it stops or waits for review."""
 
 import json
+import re
 from dataclasses import asdict, dataclass, replace
 from datetime import date
 from hashlib import sha256
@@ -10,7 +11,7 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.adapters.extractor import ForbiddenField, parse_extraction
+from app.adapters.extractor import ForbiddenField, SchemaError, parse_extraction
 from app.clock import utcnow
 from app.demo.scenarios import LineInput, Scenario, get_scenario
 from app.domain.errors import DomainError
@@ -331,6 +332,166 @@ def ingest_fetched_record(session: Session, job: Job, record: dict[str, Any]) ->
             if purchase is not None and document is not None:
                 pending = _pending_ramp_evidence(session, purchase, record)
                 _apply_ramp_evidence(session, purchase, pending)
+
+
+def ingest_import(
+    session: Session, job: Job, document: Document, payload: object | None
+) -> None:
+    """Admit a claimed import, without scheduling or running an advance.
+
+    Recordings retain invoice_identity (invoice_number and printed amount)
+    alongside Call A/B. The existing schema gate checks the entire payload for
+    forbidden fields before identity lookup or any fact admission.
+    """
+    try:
+        checked = parse_extraction(payload) if payload is not None else None
+    except ForbiddenField:
+        _forbidden_field_job(session, job.org_id, job=job)
+        return
+    identity = payload.get("invoice_identity", {}) if isinstance(payload, dict) else {}
+    if not isinstance(identity, dict):
+        raise SchemaError("invoice_identity")
+    invoice_number = identity.get("invoice_number", "")
+    amount = identity.get("amount")
+    if not isinstance(invoice_number, str) or (
+        amount is not None and not isinstance(amount, str)
+    ):
+        raise SchemaError("invoice_identity")
+    if amount is not None:
+        parse_decimal(amount)
+    call_a = checked.call_a if checked is not None else None
+    if call_a is not None and call_a.currency not in (None, "USD"):
+        raise DomainError("UNSUPPORTED_CURRENCY", "Only USD is in the demo.", 422)
+    vendor = call_a.vendor_name or "" if call_a is not None else ""
+    invoice_date = call_a.invoice_date or "" if call_a is not None else ""
+    matched, ambiguous = (
+        _invoice_candidates(
+            session, job.org_id, vendor, invoice_number, invoice_date, amount
+        )
+        if amount is not None
+        else (None, [])
+    )
+    if matched is not None:
+        # A second copy of the same invoice adds a source document; it must not
+        # duplicate facts or replace an existing reviewed result.
+        document.purchase_id = job.purchase_id = matched.id
+        _stage_audit(
+            session, job.org_id, "deduplicate", matched.id, matched.facts_version
+        )
+        return
+    purchase = Purchase(
+        id=str(uuid4()),
+        org_id=job.org_id,
+        vendor=vendor,
+        invoice_number=invoice_number,
+        invoice_date=invoice_date,
+        entity_name=ENTITY_NAME,
+        currency="USD",
+        item_status="HELD",
+        ramp_entity_amount=amount,
+        ramp_ocr_taxes=None,
+        category=None,
+        extraction_mode="replay" if checked is not None else "replay_miss",
+        facts_version=1,
+        bill_to=call_a.bill_to if call_a is not None else None,
+        created_at=utcnow(),
+    )
+    session.add(purchase)
+    document.purchase_id = job.purchase_id = purchase.id
+    session.flush()
+    for other in ambiguous:
+        _record_ambiguous(session, job.org_id, purchase.id, other.id)
+    missing = "category"
+    if call_a is not None and checked is not None:
+        inputs: list[LineInput] = []
+        stored: list[PurchaseLine] = []
+        missing = "line_amount"
+        for number, line in enumerate(call_a.lines, start=1):
+            if (
+                not line.description
+                or line.line_amount is None
+                or line.unit_price is None
+            ):
+                break
+            for value in (line.line_amount, line.unit_price, line.shipping):
+                if value is not None:
+                    parse_decimal(value)
+            inputs.append(
+                LineInput(
+                    description=line.description,
+                    line_amount=line.line_amount,
+                    tax_charged=line.tax_charged,
+                    tax_jurisdiction=line.printed_tax_jurisdiction,
+                    service_start=line.service_period_start,
+                    service_end=line.service_period_end,
+                    delivery_date=None,
+                    shipping=line.shipping,
+                    location_name=None,
+                    location_state=None,
+                    location_rung=None,
+                    seats=None,
+                    seats_covered=None,
+                    quantity=line.quantity or "",
+                )
+            )
+            stored.append(
+                PurchaseLine(
+                    id=str(uuid4()),
+                    purchase_id=purchase.id,
+                    line_number=number,
+                    description=line.description,
+                    quantity=line.quantity or "",
+                    unit_price=line.unit_price,
+                    line_amount=line.line_amount,
+                    service_period_start=line.service_period_start,
+                    service_period_end=line.service_period_end,
+                    shipping_amount=line.shipping,
+                )
+            )
+        # Admit only a complete set of printed lines with document evidence.
+        if stored and len(stored) == len(call_a.lines) and call_a.evidence:
+            session.add_all(stored)
+            session.flush()
+            # The scenario writer infers access/delivery from its category.
+            # Imports supply printed fields only, so set the proposal afterward.
+            _write_facts(
+                session, purchase, document, stored, tuple(inputs), call_a.bill_to or ""
+            )
+            for fact in session.scalars(
+                select(Fact).where(Fact.purchase_id == purchase.id)
+            ):
+                span = next(
+                    (
+                        s
+                        for s in call_a.evidence
+                        if fact.value
+                        and re.search(
+                            rf"(?<![\w.]){re.escape(fact.value)}(?![\w.])", s.passage
+                        )
+                    ),
+                    None,
+                )
+                if span is None or not 1 <= span.page <= document.pages:
+                    fact.confirmation = "UNCONFIRMED"
+                for evidence in session.scalars(
+                    select(Evidence).where(Evidence.fact_id == fact.id)
+                ):
+                    source = span or call_a.evidence[0]
+                    evidence.page = source.page
+                    evidence.passage = source.passage
+            missing = (
+                "tax_charged"
+                if any(line.tax_charged is None for line in inputs)
+                else "delivery_evidence"
+                if checked.call_b.category == "COMPUTER_HARDWARE"
+                else "user_location"
+            )
+        purchase.category = checked.call_b.category
+        if not purchase.category:
+            missing = "category"
+    _set_hold(session, purchase, HoldDecision("MISSING_REQUIRED_FACT", missing))
+    for stage in ("deduplicate", "extract", "admit_facts", "hold_check"):
+        _stage_audit(session, job.org_id, stage, purchase.id, purchase.facts_version)
 
 
 def _purchase_for_ramp_object(
