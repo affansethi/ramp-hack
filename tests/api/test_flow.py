@@ -1,4 +1,4 @@
-"""Demo flow: unsigned rules hold; a signed test ruleset can approve without a zero."""
+"""Demo flow: a candidate catalog holds; a signed catalog approves."""
 
 import hashlib
 import hmac
@@ -17,6 +17,7 @@ from app.config import load_settings
 from app.main import create_app
 from app.models import Job, Purchase, SourceEvent
 from app.worker.poller import poll_once
+from tests.activation_evidence import stamp_verified_ruleset
 from tests.api.conftest import assert_refund_candidates_stay_separate
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -61,14 +62,15 @@ def login(client: TestClient, key: str = "login") -> str:
 
 
 def _activate(dest: Path) -> None:
+    """Sign the seed catalog and attach synthetic evidence in dest only."""
     dest.mkdir()
     for name in ("entries.yaml", "rates.yaml", "catalog.yaml", "filing-basis.txt"):
         text = (ROOT / "rules" / name).read_text(encoding="utf-8")
-        text = text.replace("review_status: candidate", "review_status: reviewed")
-        text = text.replace("status: candidate", "status: signed")
-        text = text.replace("reviewed_by:", "reviewed_by: AF")
-        text = text.replace("signed_off_by:", "signed_off_by: AF")
+        if name == "catalog.yaml":
+            text = text.replace("status: candidate", "status: signed")
+            text = text.replace("signed_off_by:", "signed_off_by: agent-verified")
         (dest / name).write_text(text, encoding="utf-8")
+    stamp_verified_ruleset(dest, ROOT / "rules" / "evidence" / "allowlist.yaml")
 
 
 @pytest.fixture

@@ -34,12 +34,9 @@ def client(request: pytest.FixtureRequest, tmp_path: Path):
         copyfile(ROOT / "rules" / name, rules / name)
     if signed:
         catalog = rules / "catalog.yaml"
-        catalog.write_text(
-            catalog.read_text()
-            .replace("status: candidate", "status: signed")
-            .replace("signed_off_by:", "signed_off_by: AF"),
-            encoding="utf-8",
-        )
+        text = catalog.read_text().replace("status: candidate", "status: signed")
+        text = text.replace("signed_off_by:", "signed_off_by: AF")
+        catalog.write_text(text, encoding="utf-8")
     settings = replace(
         load_settings(ENV),
         database_url=f"sqlite:///{tmp_path / 'routing.db'}",
@@ -130,7 +127,10 @@ def _nhr(detail: dict, reason: str, engine: Mock) -> dict:
 
 
 @pytest.mark.parametrize(
-    "client", [False, True], indirect=True, ids=["unsigned-catalog", "signed-catalog"]
+    "client",
+    [False, True],
+    indirect=True,
+    ids=["candidate-catalog", "signed-catalog"],
 )
 def test_null_category_is_missing_not_unsupported(client, monkeypatch, engine):
     session, _ = client
@@ -144,7 +144,10 @@ def test_null_category_is_missing_not_unsupported(client, monkeypatch, engine):
 
 
 @pytest.mark.parametrize(
-    "client", [False, True], indirect=True, ids=["unsigned-catalog", "signed-catalog"]
+    "client",
+    [False, True],
+    indirect=True,
+    ids=["candidate-catalog", "signed-catalog"],
 )
 def test_present_unsupported_category_precedes_catalog(client, monkeypatch, engine):
     session, _ = client

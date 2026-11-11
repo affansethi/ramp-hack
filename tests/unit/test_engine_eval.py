@@ -1,4 +1,4 @@
-"""Evaluator: unsigned rules never emit an amount. A reviewed rule's string is exact."""
+"""Evaluator: candidate rules emit no amount. A reviewed rule's string is exact."""
 
 from dataclasses import replace
 from datetime import date
@@ -50,7 +50,8 @@ def _reviewed_ruleset() -> Ruleset:
         primary_source_url="https://example.test/wa",
         review_status="reviewed",
         reviewed_by="AF",
-        reviewed_at="2026-11-01",
+        reviewed_at="2026-11-09",
+        evidence_ok=False,
     )
     rate = RateEntry(
         jurisdiction="WA",
@@ -61,6 +62,7 @@ def _reviewed_ruleset() -> Ruleset:
         source_url="https://example.test/rate",
         review_status="reviewed",
         reviewed_by="AF",
+        evidence_ok=False,
     )
     return Ruleset(rules=(rule,), rates=(rate,), catalog=(), version="test")
 
@@ -299,6 +301,47 @@ def test_multi_state_net_is_unsupported_with_no_amount() -> None:
     assert result.expected_tax is None
     assert result.adjustment_amount is None
     assert result.direction is None
+
+
+def test_owner_review_activates_without_evidence() -> None:
+    rule = replace(
+        _reviewed_ruleset().rules[0],
+        review_status="reviewed",
+        reviewed_by="AF",
+        reviewed_at="2026-11-09",
+        evidence_ok=False,
+    )
+    rate = replace(
+        _reviewed_ruleset().rates[0],
+        review_status="reviewed",
+        reviewed_by="AF",
+        evidence_ok=False,
+    )
+    assert rule_is_active(rule)
+    assert rate_is_active(rate)
+
+
+def test_owner_review_needs_a_date_where_the_schema_has_one() -> None:
+    rule = replace(_reviewed_ruleset().rules[0], reviewed_at=None)
+    assert rule.review_status == "reviewed"
+    assert rule.reviewed_by == "AF"
+    assert not rule_is_active(rule)
+
+
+def test_agent_verified_without_evidence_does_not_activate() -> None:
+    rule = replace(
+        _reviewed_ruleset().rules[0],
+        reviewed_by="agent-verified",
+        evidence_ok=False,
+    )
+    rate = replace(
+        _reviewed_ruleset().rates[0],
+        reviewed_by="agent-verified",
+        evidence_ok=False,
+    )
+    assert rule.review_status == "reviewed"
+    assert not rule_is_active(rule)
+    assert not rate_is_active(rate)
 
 
 def test_reviewed_placeholder_never_activates() -> None:

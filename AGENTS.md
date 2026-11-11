@@ -29,6 +29,7 @@ Exactly one worker process: the background job poller runs in-process.
 ruff check .
 ruff format --check .
 mypy app
+make verify-content    # active tax content has agent-verification evidence
 ```
 
 ## Test

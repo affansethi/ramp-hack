@@ -1,10 +1,10 @@
-.PHONY: check lint typecheck test demo-reset demo-local
+.PHONY: check lint typecheck test verify-content demo-reset demo-local
 
 DEMO_BASE_URL ?= http://127.0.0.1:8000
 DEMO_PORT ?= 8000
 
-# One command for lint, type check and tests (AGENTS.md).
-check: lint typecheck test
+# One command for lint, type check, the content gate and tests (AGENTS.md).
+check: lint typecheck verify-content test
 
 lint:
 	ruff check .
@@ -12,6 +12,9 @@ lint:
 
 typecheck:
 	mypy app
+
+verify-content:
+	python -m scripts.verify_content
 
 test:
 	pytest

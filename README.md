@@ -60,10 +60,10 @@ Exactly one worker process: the background job poller runs in-process. Health: `
 ## Checks
 
 ```bash
-make check      # ruff check, ruff format --check, mypy app, pytest
+make check      # ruff check, ruff format --check, mypy app, verify-content, pytest
 ```
 
-Or individually per [AGENTS.md](AGENTS.md): `ruff check .`, `ruff format --check .`, `mypy app`, `pytest` (fast loop: `pytest tests/unit tests/rules`).
+Or individually per [AGENTS.md](AGENTS.md): `ruff check .`, `ruff format --check .`, `mypy app`, `make verify-content`, `pytest` (fast loop: `pytest tests/unit tests/rules`).
 
 CI runs the same command in [.github/workflows/ci.yml](.github/workflows/ci.yml) on pull requests and pushes to `main`.
 
@@ -87,4 +87,4 @@ One issue, one PR. Before committing, run the checks from [AGENTS.md](AGENTS.md)
 make check
 ```
 
-That runs `ruff check .`, `ruff format --check .`, `mypy app`, and `pytest`.
+That runs `ruff check .`, `ruff format --check .`, `mypy app`, `make verify-content`, and `pytest`.

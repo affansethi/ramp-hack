@@ -41,6 +41,20 @@ def test_signed_catalog_holds_a_missing_location() -> None:
     assert decision.named_fact == "user_location"
 
 
+def test_agent_verified_catalog_without_evidence_admits_nothing() -> None:
+    agent = CatalogEntry(
+        category="REMOTE_ACCESS_SAAS",
+        required_keys=("vendor_name", "user_location", "tax_charged"),
+        status="signed",
+        signed_off_by="agent-verified",
+        evidence_ok=False,
+    )
+    decision = decide_hold("REMOTE_ACCESS_SAAS", _facts(None), (agent,))
+    assert decision is not None
+    assert decision.named_fact == "required_fact_catalog"
+    assert decision.reason == "UNCONFIRMED_REQUIRED_FACT"
+
+
 def _location(**overrides: object) -> str:
     values: dict[str, object] = {
         "rung": 1,

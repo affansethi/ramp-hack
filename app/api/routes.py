@@ -754,7 +754,7 @@ def refund_letter(letter_id: str, request: Request, session: Db) -> dict[str, ob
         "basis_note": (
             "This draft is not sent."
             if letter.basis_text
-            else "Basis text is not signed. This draft is not sent."
+            else "Basis text is not verified. This draft is not sent."
         ),
         "status": letter.status,
     }
