@@ -1,0 +1,197 @@
+Source: https://www.tax.ny.gov/pubs_and_bulls/tg_bulletins/st/computer_software.htm
+Retrieved: 2026-11-10
+Plain-text snapshot of the HTML page (tags stripped).
+
+Computer Software
+Skip to main content
+Department of Taxation and Finance
+Search box
+Log in | Create account
+Primary navigation menu
+Online services
+Online Services home
+Make a payment
+Quick Pay (businesses and individuals)
+Pay estimated tax
+Apply for a personal income tax extension
+Request installment payment agreement
+Individuals
+Individuals home
+Income tax credits
+Quick Pay
+E-file options
+Income tax filing resource center
+Check your refund
+Respond to a letter
+Businesses
+Businesses home
+Sales and use tax
+Withholding tax
+Corporation tax
+Other taxes
+Penalty and Interest Discount (PAID) program
+Quick Pay
+Software developers
+Tax professionals
+Tax professionals home
+Registration and education
+Posting requirements
+Professional responsibility
+Real property
+Real property home
+STAR
+Respond to a STAR letter
+Property owners
+Homeowner Benefit Portal
+Assessment community
+Real estate transfer tax
+Mortgage recording tax
+Forms and guidance
+Forms and guidance home
+Form RP-5217-PDF
+Income tax rates and tables
+School district codes
+Current-year income tax forms
+Tax data
+Tax data home
+Statistics and reports
+Open data
+Municipal Data Portal
+About
+About us
+Employment opportunities
+Leadership
+Search entire Tax site
+Search Tax
+Guidance Left navigation menuGuidance
+Publications by number
+General information publications
+Publications by tax type
+Sales and use
+Withholding
+Income
+Corporation
+Metropolitan transportation mobility tax
+Wireless communications surcharge
+Alcoholic beverages
+Cigarette and tobacco
+Estate
+Fuel use
+Gasoline and similar motor fuel
+Highway use
+Petroleum business
+Property
+Real estate transfer
+Technical documents
+Advisory opinions (TSB-A)
+Tax guidances (NYT-G)
+Technical memoranda (TSB-M)
+Important notices (N-Notice)
+Tax bulletins (TB)
+Opinions of Counsel
+Regulations and regulatory actions
+New York State Tax Law
+New York State Senate
+New York State Legislature
+NYS Division of Tax Appeals
+IRS publications
+Computer Software
+Tax Bulletin ST-128 (TB-ST-128)
+Issue Date: August 5, 2014
+Introduction
+This bulletin explains how sales tax applies to sales of computer software and related services.
+Prewritten computer software is taxable as tangible personal property, whether it is sold as part of a package or as a separate component, regardless of how the software is conveyed to the purchaser. Therefore, prewritten computer software is taxable whether sold:
+on a disk or other physical medium;
+by electronic transmission; or
+by remote access.
+Prewritten computer software includes any computer software that is not designed and developed to the specifications of a particular purchaser. This includes software created by combining two or more prewritten programs or portions of prewritten programs.
+Custom software is not subject to tax provided it is designed and developed to the specifications of a particular purchaser. If the custom software is sold or otherwise transferred to someone other than the person for whom it was originally designed and developed, it becomes subject to tax.
+Prewritten software that is modified or enhanced to the specifications of a particular purchaser is subject to tax. However, if the charge for the custom modification or enhancement is reasonable and separately stated on the invoice, then the charge for the modification or enhancement is not subject to tax.
+Computer software services
+Many services related to computer software are exempt. Examples of these services include:
+training
+consulting
+instruction
+troubleshooting
+installing
+programming
+systems analysis
+repairing
+maintaining
+servicing
+However, when these otherwise exempt services are provided in conjunction with the sale of prewritten software, the charge for the service is exempt from tax only when the charge for the service is reasonable and separately stated on the invoice or billing statement given to the customer.
+Sales of software upgrades
+Generally, the sale of a revision or upgrade of prewritten software is subject to tax as the sale of prewritten software. If, however, the software upgrade is designed and developed to the specifications of a particular purchaser, its sale to that specific purchaser is exempt as a sale of custom software.
+Remotely accessed software
+A sale of computer software includes any transfer of title or possession or both, including a license to use.
+When a purchaser remotely accesses software over the Internet, the seller has transferred possession of the software because the purchaser gains constructive possession of the software and the right to use or control the software.
+Accordingly, the sale to a purchaser in New York of a license to remotely access software is subject to state and local sales tax. The situs of the sale for purposes of determining the proper local tax rate and jurisdiction is the location from which the purchaser uses or directs the use of the software, not the location of the code embodying the software. Therefore, if a purchaser has employees who use the software located both in and outside of New York State, the seller of the software should collect tax based on the portion of the receipt attributable to the users located in New York.
+Software maintenance agreements
+Separately stated and reasonable charges for maintaining, servicing, or repairing software are exempt from sales tax. However, if a software maintenance agreement provides for the sale of both taxable elements (such as upgrades to prewritten software) and nontaxable elements, the charge for the entire maintenance agreement is subject to tax unless the charges for the nontaxable elements are:
+reasonable and separately stated in the maintenance agreement, and
+billed separately on the invoice or other document of sale given to the purchaser.
+Exempt sales for production or research and development
+Prewritten computer software used or consumed directly and predominantly in the production of tangible personal property for sale, or directly and predominantly in research and development, is exempt from tax. The purchaser must provide the seller with a properly completed Form ST-121, New York State and Local Sales and Use Tax Exempt Use Certificate. See Tax Bulletin Research and Development (TB-ST-773).
+Exempt sales to corporations and partnerships
+Custom software is exempt from tax when resold or transferred directly or indirectly by the purchaser of the software to either:
+a corporation that is a member of an affiliated group of corporations that includes the original purchaser of the custom software; or
+a partnership in which the original purchaser of the custom software and other members of the affiliated group have at least a 50% interest in capital or profits.
+However, the exemption does not apply if the sale or transfer of the custom software is part of a plan having as its principal purpose the avoidance or evasion of tax, or if the sale is prewritten software that is available to be sold to customers in the ordinary course of business. See TSB-M-93(3)S, State and Local Sales and Compensating Use Taxes Imposed on Certain Sales of Computer Software, for more information.
+Note: A Tax Bulletin is an informational document designed to provide general guidance in simplified language on a topic of interest to taxpayers. It is accurate as of the date issued. However, taxpayers should be aware that subsequent changes in the Tax Law or its interpretation may affect the accuracy of a Tax Bulletin. The information provided in this document does not cover every situation and is not intended to replace the law or change its meaning.
+References and other useful information
+Tax Law: Sections 1101(b)(6), 1101(b)(14), 1115(a)(28), 1115(o)
+Regulations: Sections 526.7(e)(4), 527.1, 527.5
+Memoranda: TSB-M-93(3)S, State and Local Sales and Compensating Use Taxes
+Imposed on Certain Sales of Computer Software
+Bulletin:
+Research and Development (TB-ST-773)
+Updated: October 16, 2026
+Department of
+Taxation and Finance
+Get help
+Contact us
+Help resources
+Freedom of Information Law (FOIL)
+Taxpayer Rights Advocate
+Report fraud
+Feedback
+Website
+Site map
+Privacy
+Security
+Disclaimer
+About us
+About us
+Employment opportunities
+Press
+Email policy
+Accessibility
+Regulations and regulatory actions
+Language assistance
+Language access
+Español
+繁體中文
+Русский
+יידיש
+বাংলা
+한국어
+Free interpretation
+Kreyòl ayisyen
+Italiano
+العربية
+Polski
+Français
+اردو
+Connect with us
+Subscribe to NYS Department of Tax and Finance
+NYS Department of Tax and Finance on LinkedIn
+NYS Department of Tax and Finance on Facebook
+NYS Department of Tax and Finance on Instagram
+NYS Department of Tax and Finance on X
+NYS Department of Tax and Finance on YouTube
+Register To Vote
+Sign up online or download and mail in your application.
+Vaccinate NY
+Get the facts about the COVID-19 vaccine.
+Donate Life
+Become an organ donor today!

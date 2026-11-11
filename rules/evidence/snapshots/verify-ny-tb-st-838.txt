@@ -1,0 +1,232 @@
+Source: https://www.tax.ny.gov/pubs_and_bulls/tg_bulletins/st/shipping_and_delivery_charges.htm
+Retrieved: 2026-11-10
+Plain-text snapshot of the HTML page (tags stripped).
+
+Shipping and Delivery Charges
+Skip to main content
+Department of Taxation and Finance
+Search box
+Log in | Create account
+Primary navigation menu
+Online services
+Online Services home
+Make a payment
+Quick Pay (businesses and individuals)
+Pay estimated tax
+Apply for a personal income tax extension
+Request installment payment agreement
+Individuals
+Individuals home
+Income tax credits
+Quick Pay
+E-file options
+Income tax filing resource center
+Check your refund
+Respond to a letter
+Businesses
+Businesses home
+Sales and use tax
+Withholding tax
+Corporation tax
+Other taxes
+Penalty and Interest Discount (PAID) program
+Quick Pay
+Software developers
+Tax professionals
+Tax professionals home
+Registration and education
+Posting requirements
+Professional responsibility
+Real property
+Real property home
+STAR
+Respond to a STAR letter
+Property owners
+Homeowner Benefit Portal
+Assessment community
+Real estate transfer tax
+Mortgage recording tax
+Forms and guidance
+Forms and guidance home
+Form RP-5217-PDF
+Income tax rates and tables
+School district codes
+Current-year income tax forms
+Tax data
+Tax data home
+Statistics and reports
+Open data
+Municipal Data Portal
+About
+About us
+Employment opportunities
+Leadership
+Search entire Tax site
+Search Tax
+Guidance Left navigation menuGuidance
+Publications by number
+General information publications
+Publications by tax type
+Sales and use
+Withholding
+Income
+Corporation
+Metropolitan transportation mobility tax
+Wireless communications surcharge
+Alcoholic beverages
+Cigarette and tobacco
+Estate
+Fuel use
+Gasoline and similar motor fuel
+Highway use
+Petroleum business
+Property
+Real estate transfer
+Technical documents
+Advisory opinions (TSB-A)
+Tax guidances (NYT-G)
+Technical memoranda (TSB-M)
+Important notices (N-Notice)
+Tax bulletins (TB)
+Opinions of Counsel
+Regulations and regulatory actions
+New York State Tax Law
+New York State Senate
+New York State Legislature
+NYS Division of Tax Appeals
+IRS publications
+Shipping and Delivery Charges
+Tax Bulletin ST-838 (TB-ST-838)
+Issue Date: May 14, 2012
+Introduction
+This bulletin explains how sales and use taxes apply to shipping and delivery charges. Generally, charges for shipping or delivery that a seller includes on its bill are taxable if the product or service that is being shipped or delivered is taxable. The terms shipping and delivery also include charges identified by terms such as transportation, handling, or postage.
+Taxable products or services
+When a taxable product or service is sold, any charges for shipping or delivery that the seller includes on the bill become part of the receipt subject to sales tax.
+If a customer separately arranges and pays for delivery of a taxable item by a third party, the seller of the item will only collect sales tax on its charge (see Delivery-only services, below).
+Example: A customer purchases a clothes dryer (including a service contract) from a major department store chain that has its own delivery vehicles. The department store delivers the appliance to the customer’s home and charges $20.00 for delivery. The store issues the following bill to the customer:
+Appliance
+$499.95
+Service contract
+30.00
+Delivery charge
+20.00
+Total (before sales tax)
+$549.95
+Sales tax must be computed on the total charge of $549.95.
+Example: A customer purchases a table and chairs from a custom furniture maker and requests that the items be delivered. The furniture maker contracts with a common carrier to transport the furniture to the customer’s home. The furniture maker issues the following bill to the customer:
+Table and chairs
+$3,500.00
+Transportation
+250.00
+Total (before sales tax)
+$3,750.00
+Sales tax must be computed on the total charge of $3,750.00.
+Example: A contractor purchases lumber from a broker. The contract provides that the lumber will be drop-shipped from a producer’s mill in Washington to the job site in New York and prepaid transportation charges will be included. The broker issues the following bill to the customer:
+1000 board feet of 2x4's
+$400.00
+Prepaid freight
+100.00
+Total (before sales tax)
+$500.00
+Sales tax must be computed on the total charge of $500.00.
+Example: A person in Albany sends his watch to a jeweler in New York City to be repaired. After being repaired, the watch is shipped back to Albany. The jeweler’s bill lists the charge for the repair service and also a charge for shipping. Sales tax is due on the total amount paid for the taxable repair service, including the shipping charge.
+Nontaxable products or services
+If the product or service being sold is not taxable, any charge to the customer for shipping or delivery is also not taxable. This also applies when the customer gives the seller a valid resale certificate or other exemption document.
+Example: A customer purchases smoked meats, assorted cheeses, and jellies from a mail-order food merchant. The food merchant adds a shipping and handling charge to the customer’s bill. Since all of the products the customer purchased are nontaxable food products, the entire charge, including the shipping and handling charge, is exempt from tax.
+Example: A wholesaler delivers an inventory shipment to a customer engaged in retail sales. The customer provides the wholesaler with a resale certificate at the time the order is placed. Any freight charge billed by the wholesaler for delivery of this order is not taxable.
+Sales including both taxable and nontaxable charges
+When taxable and nontaxable products or services are combined into a single charge on one bill, the entire bill is taxable, including any shipping or delivery charges.
+When charges for taxable and nontaxable products or services are listed separately on a bill, sales tax is not collected on the nontaxable charges. However:
+If only one charge for shipping or delivery is listed on the bill, the entire delivery charge is treated as part of the taxable portion of the bill.
+If the charge for shipping or delivery is fairly allocated between the taxable and nontaxable products of the bill, then only the shipping or delivery charge allocated to the taxable products on the bill is taxable.
+Example: A customer orders a coffee maker and a five-pound supply of imported coffee through the mail. The mail-order retailer issues the following bill to the customer:
+Coffee maker
+$89.95
+Five pounds of imported coffee
+55.00
+Shipping
+5.00
+Total (before sales tax)
+$149.95
+The amount subject to tax is $94.95 ($89.95 + $5.00).
+Example: An art dealer purchases five works of fine art at auction. Four pieces are to be resold through the dealer’s gallery, and one piece is for the dealer’s own private collection. The auction house uses its own private courier service for delivery and charges a flat $250.00 per item for local delivery. The auction house issues the following bill to the purchaser:
+Item 1 (to be resold)
+$300,000
+Item 2 (to be resold)
+175,000
+Item 3 (to be resold)
+200,000
+Item 4 (to be resold)
+250,000
+Item 5 (for private collection)
+250,000
+Delivery (5 items @ $250 each)
+1,250
+The amount subject to tax is $250,250 (item 5 + $250 for its delivery).
+Delivery-only services
+Sales tax is not imposed on transportation services. Therefore, if a delivery service is sold independently from the sale of the taxable property being transported, the charge for the delivery service is not taxable. For the sale of the delivery service to be independent of the sale of the property, the customer must have arranged for the transportation and the customer must be charged for the delivery on a separate invoice.
+Example: A customer purchases taxable products from a seller. The customer separately contracts with a common carrier to transport the products from the seller’s place of business to the customer. The customer receives one bill from the seller for the taxable products and another bill from the common carrier for the delivery service. The bill from the common carrier is not taxable, since the bill is only for transportation.
+Use tax
+When a purchaser buys a taxable product or service, and the seller doesn’t collect sales tax, the purchaser must pay use tax directly to the Tax Department. Any charges by the seller for shipping or delivery are included in the total amount subject to use tax.
+For more information on use tax, see Tax Bulletins Use Tax for Businesses (TB-ST-910) and Use Tax for Individuals, Estates, and Trusts (TB-ST-913).
+Note: A Tax Bulletin is an informational document designed to provide general guidance in simplified language on a topic of interest to taxpayers. It is accurate as of the date issued. However, taxpayers should be aware that subsequent changes in the Tax Law or its interpretation may affect the accuracy of a Tax Bulletin. The information provided in this document does not cover every situation and is not intended to replace the law or change its meaning.
+References and other useful information
+Tax Law: Sections 1101(b)(3), 1111(h)
+Regulations: Section 526.5(g)
+Memoranda:
+TSB-M-92(2)S, Delivery Charge Added to Taxable Receipt Effective September 1, 1991
+Bulletins:
+Taxable Receipt (TB-ST-860)
+Use Tax for Businesses (TB-ST-910)
+Use Tax for Individuals, Estates, and Trusts (TB-ST-913)
+Quick Reference Guide for Taxable and Exempt Property and Services (TB-ST-740)
+Updated: October 16, 2026
+Department of
+Taxation and Finance
+Get help
+Contact us
+Help resources
+Freedom of Information Law (FOIL)
+Taxpayer Rights Advocate
+Report fraud
+Feedback
+Website
+Site map
+Privacy
+Security
+Disclaimer
+About us
+About us
+Employment opportunities
+Press
+Email policy
+Accessibility
+Regulations and regulatory actions
+Language assistance
+Language access
+Español
+繁體中文
+Русский
+יידיש
+বাংলা
+한국어
+Free interpretation
+Kreyòl ayisyen
+Italiano
+العربية
+Polski
+Français
+اردو
+Connect with us
+Subscribe to NYS Department of Tax and Finance
+NYS Department of Tax and Finance on LinkedIn
+NYS Department of Tax and Finance on Facebook
+NYS Department of Tax and Finance on Instagram
+NYS Department of Tax and Finance on X
+NYS Department of Tax and Finance on YouTube
+Register To Vote
+Sign up online or download and mail in your application.
+Vaccinate NY
+Get the facts about the COVID-19 vaccine.
+Donate Life
+Become an organ donor today!

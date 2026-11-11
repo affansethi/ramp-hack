@@ -1,0 +1,114 @@
+# Blind verification pass (docs/content-verification.md step 4) for catalog-COMPUTER_HARDWARE.
+# Written before opening the research evidence or the catalog's required_keys.
+item: catalog-COMPUTER_HARDWARE
+role: verify
+lane: droid
+model: claude-opus-5-5
+issue: "#110"
+date: "2026-11-10"
+blind: true
+conclusion: agree
+notes: >-
+  Independent answer from the Design Spec section 4.1 candidate set (product basis), Technical
+  Spec v2 sections 3 and 4, the app's fact-key vocabulary (app/domain/commands.py
+  ALLOWED_FACT_FIELDS, app/domain/pipeline.py), and official NY sources (hardware is scoped to the
+  one NY case). Common invoice facts (vendor_name, invoice_date, line_description, line_amount,
+  buyer_entity) and tax_charged are required for every category by the Design Spec. Hardware
+  requires confirmed delivery evidence instead of the SaaS location ladder, and a sourced shipping
+  amount (explicit zero allowed) for the taxable base. Law supports why they matter: NY DTF Use Tax
+  for Businesses imposes use tax on property delivered to the business in New York when sales tax
+  was not paid, measured on cost including shipping and handling, at the rate where delivery is
+  taken (delivery_evidence, shipping, tax_charged); NY TB-ST-838 includes seller shipping or
+  delivery charges in the amount subject to use tax (shipping). The SaaS-only keys
+  (delivery_method, access_model, service_period, seat_count, user_location) are not required for
+  hardware. tax_charged_jurisdiction is required only when tax was charged; app/domain/holds.py
+  enforces that after the catalog loop, so it is not in the unconditional list. bill_to is
+  informational and never required.
+  Comparison (after this file was written): identical to the research pass and to rules/catalog.yaml,
+  same 8 keys in the same order; no reordering was needed. Snapshot hashes are SHA-256 of the
+  LF bytes as committed (the Design Spec hash is of its git blob, since core.autocrlf rewrites
+  line endings in a Windows checkout).
+sources:
+  - url: https://www.tax.ny.gov/pubs_and_bulls/tg_bulletins/st/use_tax_for_businesses.htm
+    authority: published guidance (NY DTF Tax Bulletin, Use Tax for Businesses)
+    pinpoint: Use Tax for Businesses, purchases over the Internet / by common carrier (example)
+    quote: "You buy a computer through a retail Web site from a business that does not collect New York sales tax. It is delivered by a freight company to your business in New York State. You owe New York State and local use tax on the cost of the computer, including any charge for shipping and handling."
+    supports: [delivery_evidence, shipping, tax_charged]
+    retrieved_at: "2026-11-10"
+    snapshot: rules/evidence/snapshots/verify-ny-use-tax-for-businesses.txt
+    snapshot_sha256: 04641d5cf8d19abd65cad8da15413502f6585ea612805b91b7391fc083cd65ee
+  - url: https://www.tax.ny.gov/pubs_and_bulls/tg_bulletins/st/use_tax_for_businesses.htm
+    authority: published guidance (NY DTF Tax Bulletin, Use Tax for Businesses)
+    pinpoint: Use Tax for Businesses, How to calculate use tax
+    quote: "Use tax is generally due on the consideration given or contracted to be given for the property or service, or for the use of the property or service, including any charges by the seller to the user for shipping or handling. Generally, the rate of tax used to compute the use tax due is the rate in effect where the business takes delivery of an item or service, or where it uses the item or service, if higher."
+    supports: [delivery_evidence, shipping]
+    retrieved_at: "2026-11-10"
+    snapshot: rules/evidence/snapshots/verify-ny-use-tax-for-businesses.txt
+    snapshot_sha256: 04641d5cf8d19abd65cad8da15413502f6585ea612805b91b7391fc083cd65ee
+  - url: https://www.tax.ny.gov/pubs_and_bulls/tg_bulletins/st/use_tax_for_businesses.htm
+    authority: published guidance (NY DTF Tax Bulletin, Use Tax for Businesses)
+    pinpoint: Use Tax for Businesses, introduction
+    quote: "Use tax is a tax imposed on the use of taxable items and services in New York when the sales tax has not been paid."
+    supports: [tax_charged]
+    retrieved_at: "2026-11-10"
+    snapshot: rules/evidence/snapshots/verify-ny-use-tax-for-businesses.txt
+    snapshot_sha256: 04641d5cf8d19abd65cad8da15413502f6585ea612805b91b7391fc083cd65ee
+  - url: https://www.tax.ny.gov/pubs_and_bulls/tg_bulletins/st/shipping_and_delivery_charges.htm
+    authority: published guidance (NY DTF Tax Bulletin TB-ST-838)
+    pinpoint: TB-ST-838, Use tax
+    quote: "When a purchaser buys a taxable product or service, and the seller doesn’t collect sales tax, the purchaser must pay use tax directly to the Tax Department. Any charges by the seller for shipping or delivery are included in the total amount subject to use tax."
+    supports: [shipping]
+    retrieved_at: "2026-11-10"
+    snapshot: rules/evidence/snapshots/verify-ny-tb-st-838.txt
+    snapshot_sha256: b593804891dd88d6cae1053a3a8348b2df4e812fc0d9460fb97290ce9b2bdad4
+  - url: "docs/spec/Tax Leak — Design Spec (Ramp Hackathon).md"
+    authority: product basis (Design Spec section 4.1, candidate required-fact set)
+    pinpoint: Design Spec section 4.1, Facts that matter table
+    quote: "Vendor name, invoice date, line description, line amount, buyer entity | Required"
+    supports: [vendor_name, invoice_date, line_description, line_amount, buyer_entity]
+    retrieved_at: "2026-11-10"
+    snapshot: "docs/spec/Tax Leak — Design Spec (Ramp Hackathon).md"
+    snapshot_sha256: 4a914ae6e673de907a2a39b5c06ecd6b7f80beb6855fe34455535a22ae18b055
+  - url: "docs/spec/Tax Leak — Design Spec (Ramp Hackathon).md"
+    authority: product basis (Design Spec section 4.1)
+    pinpoint: Design Spec section 4.1, Facts that matter table
+    quote: "Tax charged (amount), including \"none shown\" | Required"
+    supports: [tax_charged]
+    retrieved_at: "2026-11-10"
+    snapshot: "docs/spec/Tax Leak — Design Spec (Ramp Hackathon).md"
+    snapshot_sha256: 4a914ae6e673de907a2a39b5c06ecd6b7f80beb6855fe34455535a22ae18b055
+  - url: "docs/spec/Tax Leak — Design Spec (Ramp Hackathon).md"
+    authority: product basis (Design Spec section 4.1)
+    pinpoint: Design Spec section 4.1, Facts that matter table (user location row)
+    quote: "Hardware requires confirmed delivery evidence, not the SaaS ladder."
+    supports: [delivery_evidence]
+    retrieved_at: "2026-11-10"
+    snapshot: "docs/spec/Tax Leak — Design Spec (Ramp Hackathon).md"
+    snapshot_sha256: 4a914ae6e673de907a2a39b5c06ecd6b7f80beb6855fe34455535a22ae18b055
+  - url: "docs/spec/Tax Leak — Design Spec (Ramp Hackathon).md"
+    authority: product basis (Design Spec section 4.1)
+    pinpoint: Design Spec section 4.1, rules that apply to every fact (location ladder bullet)
+    quote: "NY hardware instead requires confirmed delivery/ship-to evidence; include sourced shipping amount (explicit zero allowed) for the signed rule's taxable base."
+    supports: [delivery_evidence, shipping]
+    retrieved_at: "2026-11-10"
+    snapshot: "docs/spec/Tax Leak — Design Spec (Ramp Hackathon).md"
+    snapshot_sha256: 4a914ae6e673de907a2a39b5c06ecd6b7f80beb6855fe34455535a22ae18b055
+  - url: "docs/spec/Tax Leak — Design Spec (Ramp Hackathon).md"
+    authority: product basis (Design Spec section 4.1)
+    pinpoint: Design Spec section 4.1, Facts that matter table (conditional requirement, enforced in app/domain/holds.py)
+    quote: "Tax charged (jurisdiction), when tax was charged | Required"
+    supports: [tax_charged_jurisdiction (conditional, not in required_keys)]
+    retrieved_at: "2026-11-10"
+    snapshot: "docs/spec/Tax Leak — Design Spec (Ramp Hackathon).md"
+    snapshot_sha256: 4a914ae6e673de907a2a39b5c06ecd6b7f80beb6855fe34455535a22ae18b055
+values:
+  category: COMPUTER_HARDWARE
+  required_keys:
+    - vendor_name
+    - invoice_date
+    - line_description
+    - line_amount
+    - buyer_entity
+    - tax_charged
+    - delivery_evidence
+    - shipping
