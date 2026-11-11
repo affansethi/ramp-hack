@@ -4,3 +4,6 @@ __pycache__/
 .DS_Store
 *.db
 .pytest_cache/
+web/node_modules/
+web/dist/
+web/package-lock.json
