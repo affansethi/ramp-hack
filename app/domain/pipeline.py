@@ -1,7 +1,7 @@
 """Ingest a synthetic purchase and advance it until it stops or waits for review."""
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import date
 from hashlib import sha256
 from uuid import uuid4
@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.adapters.extractor import ForbiddenField, parse_extraction
 from app.clock import utcnow
-from app.demo.scenarios import LineInput, Scenario
+from app.demo.scenarios import LineInput, Scenario, get_scenario
 from app.domain.errors import DomainError
 from app.domain.evaluate import EngineLineRequest, evaluate_line
 from app.domain.holds import (
@@ -54,7 +54,9 @@ class IngestResult:
     source_event_id: str
 
 
-def ingest_scenario(session: Session, scenario: Scenario, org_id: str) -> IngestResult:
+def ingest_scenario(
+    session: Session, scenario: Scenario, org_id: str, *, job: Job | None = None
+) -> IngestResult:
     if scenario.currency != "USD":
         raise DomainError("UNSUPPORTED_CURRENCY", "Only USD is in the demo.", 422)
     # In-memory schema gate. Replay does not open a recording. A forbidden key
@@ -62,7 +64,7 @@ def ingest_scenario(session: Session, scenario: Scenario, org_id: str) -> Ingest
     try:
         parse_extraction(_printed_extraction(scenario))
     except ForbiddenField:
-        return _forbidden_field_job(session, org_id)
+        return _forbidden_field_job(session, org_id, job=job)
     return _ingest(
         session,
         org_id=org_id,
@@ -148,8 +150,14 @@ def _printed_evidence(line: LineInput) -> str:
     return ". ".join(parts)
 
 
-def _forbidden_field_job(session: Session, org_id: str) -> IngestResult:
+def _forbidden_field_job(
+    session: Session, org_id: str, *, job: Job | None = None
+) -> IngestResult:
     """Record the refusal without a purchase, fact, determination, or amount."""
+    if job is not None:
+        job.status = "FAILED"
+        job.error_code = "FORBIDDEN_FIELD"
+        return IngestResult(None, job.id, False, job.id)
     job = Job(
         id=str(uuid4()),
         org_id=org_id,
@@ -171,50 +179,151 @@ def ingest_webhook(
     org_id: str,
     *,
     event_id: str,
-    transaction_id: str,
-    vendor: str,
-    amount: str,
-    currency: str,
-    invoice_date: str,
+    event_type: str,
+    object_id: str,
+    receipt_id: str | None = None,
     signature_ok: bool,
+    demo_scenario: str | None = None,
+    raw_payload: str | None = None,
 ) -> IngestResult:
     if not signature_ok:
         raise DomainError("BAD_SIGNATURE", "X-Ramp-Signature did not match.", 401)
-    if currency != "USD":
-        raise DomainError("UNSUPPORTED_CURRENCY", "Only USD is in the demo.", 422)
-    line = LineInput(
-        description="Ramp transaction, no receipt recording",
-        line_amount=amount,
-        tax_charged=None,
-        tax_jurisdiction=None,
-        service_start=None,
-        service_end=None,
-        delivery_date=None,
-        shipping=None,
-        location_name=None,
-        location_state=None,
-        location_rung=None,
-        seats=None,
-        seats_covered=None,
+    existing = _find_event(session, org_id, event_id)
+    if existing is not None:
+        job = session.get(Job, existing.id)
+        return IngestResult(
+            existing.purchase_id, job.id if job else None, True, existing.id
+        )
+    payload = json.dumps(
+        dict(
+            event_type=event_type,
+            object_id=object_id,
+            receipt_id=receipt_id,
+            demo_scenario=demo_scenario,
+        )
     )
-    return _ingest(
-        session,
+    event = SourceEvent(
+        id=str(uuid4()),
         org_id=org_id,
-        event_id=event_id,
+        source="ramp",
+        external_event_id=event_id,
+        payload_hash=_hash(raw_payload if raw_payload is not None else payload),
         signature_result="OK",
-        payload=event_id,
-        vendor=vendor,
-        invoice_number=f"RAMP-{transaction_id}",
-        invoice_date=invoice_date,
-        entity_amount=amount,
-        ocr_taxes=None,
-        category=None,
-        bill_to="",
-        lines=(line,),
-        demo_scenario=None,
-        extraction_mode="replay_miss",
-        transaction_id=transaction_id,
+        purchase_id=None,
+        created_at=utcnow(),
     )
+    session.add(event)
+    # A fetch job shares its SourceEvent id; its input survives worker restarts.
+    session.add(
+        Job(
+            id=event.id,
+            org_id=org_id,
+            kind="fetch",
+            input_payload=payload,
+            purchase_id=None,
+            status="QUEUED",
+            attempts=0,
+            created_at=utcnow(),
+        )
+    )
+    session.flush()
+    return IngestResult(None, event.id, False, event.id)
+
+
+def ingest_fetched_record(
+    session: Session, job: Job, record: dict[str, str | None]
+) -> None:
+    event = session.get(SourceEvent, job.id)
+    if event is None:
+        raise ValueError("missing source event")
+    if record["currency_code"] != "USD":
+        return
+    amount = record["entity_amount"]
+    tax = record["ocr_taxes"]
+    if not isinstance(amount, str) or (tax is not None and not isinstance(tax, str)):
+        raise ValueError("Ramp amounts must be decimal strings")
+    parse_decimal(amount)
+    if tax is not None:
+        parse_decimal(tax)
+    inputs = json.loads(job.input_payload or "{}")
+    transaction_id = inputs["object_id"]
+    if inputs["event_type"] == "bills.created":
+        transaction_id = "bill:" + transaction_id
+    existing = session.scalar(
+        select(Purchase).where(
+            Purchase.org_id == job.org_id,
+            Purchase.ramp_transaction_id == transaction_id,
+        )
+    )
+    if existing is not None:
+        # Amount and OCR feed the cross-check. A new value versions the purchase,
+        # supersedes the current result, and queues that check again.
+        _refresh_fetched_inputs(session, existing, amount, tax)
+        event.purchase_id = job.purchase_id = existing.id
+        return
+    scenario = (
+        get_scenario(inputs["demo_scenario"]) if inputs.get("demo_scenario") else None
+    )
+    if scenario is not None:
+        # Existing owner-provided demo extraction remains a labeled replay.
+        result = ingest_scenario(
+            session,
+            replace(scenario, entity_amount=amount, ocr_taxes=tax),
+            job.org_id,
+            job=job,
+        )
+    else:
+        line = LineInput(
+            "Simulated Ramp record",
+            amount,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        result = _ingest(
+            session,
+            org_id=job.org_id,
+            event_id=event.external_event_id,
+            signature_result="OK",
+            payload=job.input_payload or "",
+            vendor=record["vendor"] or "",
+            invoice_number=record["invoice_number"] or "",
+            invoice_date=record["invoice_date"] or "",
+            entity_amount=amount,
+            ocr_taxes=tax,
+            category=None,
+            bill_to="",
+            lines=(line,),
+            demo_scenario=None,
+            extraction_mode="replay_miss",
+            transaction_id=transaction_id,
+        )
+    event.purchase_id = job.purchase_id = result.purchase_id
+
+
+def _refresh_fetched_inputs(
+    session: Session, purchase: Purchase, amount: str, tax: str | None
+) -> None:
+    changed = False
+    if purchase.ramp_entity_amount != amount:
+        purchase.ramp_entity_amount = amount
+        changed = True
+    if purchase.ramp_ocr_taxes != tax:
+        purchase.ramp_ocr_taxes = tax
+        changed = True
+    if not changed:
+        return
+    purchase.facts_version += 1
+    _supersede_current(session, purchase)
+    _enqueue(session, purchase.org_id, purchase.id)
 
 
 def advance_purchase(session: Session, purchase_id: str, ruleset: Ruleset) -> None:
