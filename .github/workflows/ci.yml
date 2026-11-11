@@ -53,8 +53,10 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt -r requirements-dev.txt
 
-      - name: Release gates and replay eval
-        run: pytest tests/gates tests/eval
+      # Never-fail cases live in tests/api and tests/unit as well as tests/gates,
+      # so the required gates check runs every test (brief Task 16).
+      - name: Release gates, never-fail cases and replay eval
+        run: pytest tests
 
   web:
     # Playwright 1.57 browsers support Ubuntu 24.04, not the 26.04 ubuntu-latest image.
