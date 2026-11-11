@@ -125,7 +125,7 @@ export default function Queue({ tick }) {
                   <td>{first ? "Reviewed rule / engine-supported" : row.queue === "needs_human_review" ? "Needs human review" : "—"}</td>
                   <td>{pending.map((p) => p.direction).filter(Boolean).join(", ") || "—"}</td>
                   <td>
-                    {statusLabel(row)}
+                    <span className={`pill pill-${row.queue}`}>{statusLabel(row)}</span>
                     {(row.possible_duplicate_ids || []).length ? (
                       <span className="tag warn">Possible duplicate</span>
                     ) : null}
