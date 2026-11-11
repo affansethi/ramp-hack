@@ -540,6 +540,54 @@ async def imports(
     return JSONResponse(payload, status_code=202)
 
 
+_FAILED_REASON = {
+    "FETCH_FAILED": (
+        "The Ramp record could not be fetched after every retry, so no purchase "
+        "was created. Resend the Ramp event or enter the purchase by hand."
+    ),
+}
+
+
+@router.get("/jobs")
+def jobs(request: Request, session: Db, status: str = "FAILED") -> dict[str, object]:
+    """Jobs by status (default FAILED) so a failed fetch never disappears.
+
+    A failed fetch has no purchase (IDs-only intake creates it after the fetch),
+    so the reviewer sees it here, with a reason and never an amount.
+    """
+    viewer = _viewer(request, session)
+    if status not in ("QUEUED", "RUNNING", "SUCCEEDED", "FAILED"):
+        raise DomainError("BAD_STATUS", "Unknown job status.", 422)
+    rows = session.scalars(
+        select(Job)
+        .where(Job.org_id == viewer.org_id, Job.status == status)
+        .order_by(Job.created_at.desc(), Job.id)
+        .limit(100)
+    ).all()
+    listed = []
+    for row in rows:
+        inputs = json.loads(row.input_payload or "{}")
+        listed.append(
+            {
+                "id": row.id,
+                "stage": row.kind,
+                "status": row.status,
+                "attempts": row.attempts,
+                "error_code": row.error_code,
+                "purchase_id": row.purchase_id,
+                "event_type": inputs.get("event_type"),
+                "ramp_object_id": inputs.get("object_id"),
+                "created_at": row.created_at,
+                "reason": _FAILED_REASON.get(
+                    row.error_code or "", "The job failed after every retry."
+                )
+                if row.status == "FAILED"
+                else None,
+            }
+        )
+    return {**meta(request.app.state.settings), "jobs": listed}
+
+
 @router.get("/jobs/{job_id}")
 def job(job_id: str, request: Request, session: Db) -> dict[str, object]:
     viewer = _viewer(request, session)

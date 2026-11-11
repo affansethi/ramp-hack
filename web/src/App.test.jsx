@@ -11,7 +11,7 @@ const ROW = {
   queue: "ready", extraction_mode: "replay", stop_reason: "Engine-supported result waiting for a named reviewer.",
   pending_results: [{ determination_id: "d1", jurisdiction: "WA", direction: "LIABILITY", engine_amount: { value: "151.920", currency: "USD" } }],
 };
-const HELD = { id: "p2", vendor: "Synthetic Team Co", invoice_number: "SYN-1006", invoice_date: "2026-11-20", queue: "held", pending_results: [] };
+const HELD = { possible_duplicate_ids: ["p9"], id: "p2", vendor: "Synthetic Team Co", invoice_number: "SYN-1006", invoice_date: "2026-11-20", queue: "held", pending_results: [] };
 const TOTALS = {
   ...META,
   approved_liabilities: { by_jurisdiction: [], message: "No approved liabilities" },
@@ -30,6 +30,7 @@ function mockApi(calls) {
       : path === "/demo/scenarios" ? { ...META, scenarios: ["case1", "case6"] }
       : path === "/purchases" ? { ...META, purchases: [ROW, HELD], next_cursor: null }
       : path === "/totals" ? TOTALS
+      : path === "/jobs" ? { ...META, jobs: [{ id: "j1", stage: "fetch", status: "FAILED", attempts: 3, error_code: "FETCH_FAILED", event_type: "transactions.receipt_added", ramp_object_id: "missing", reason: "no purchase was created" }] }
       : {};
     return { ok: true, status: 200, text: async () => JSON.stringify(body) };
   });
@@ -57,6 +58,11 @@ describe("app shell and queue", () => {
     // The held row shows no amount.
     const heldRow = screen.getByText("Synthetic Team Co").closest("tr");
     expect(heldRow.textContent).not.toMatch(/\d+\.\d{2} USD/);
+    expect(heldRow.textContent).toContain("Possible duplicate");
+    const visibility = screen.getByTestId("visibility").textContent;
+    expect(visibility).toContain("1 failed fetch");
+    expect(visibility).toContain("1 possible duplicate");
+    expect(visibility).not.toMatch(/\d+\.\d{2}/);
   });
 });
 
