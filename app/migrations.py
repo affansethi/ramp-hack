@@ -53,6 +53,16 @@ def upgrade_document_blob_key(engine: Engine) -> None:
             )
 
 
+def upgrade_fetch_input(engine: Engine) -> None:
+    """Keep existing local scratch databases usable before the Alembic baseline."""
+    with engine.begin() as connection:
+        if "jobs" not in inspect(connection).get_table_names():
+            return
+        columns = {column["name"] for column in inspect(connection).get_columns("jobs")}
+        if "input_payload" not in columns:
+            connection.execute(text("ALTER TABLE jobs ADD COLUMN input_payload TEXT"))
+
+
 def upgrade_workpapers(engine: Engine) -> None:
     """Add freeze columns and the ready fingerprint index on existing tables.
 

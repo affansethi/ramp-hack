@@ -68,6 +68,7 @@ def init_database(url: str) -> sessionmaker[Session]:
     from app.migrations import (
         upgrade_audit_hashes,
         upgrade_document_blob_key,
+        upgrade_fetch_input,
         upgrade_session_csrf,
         upgrade_workpapers,
     )
@@ -76,6 +77,7 @@ def init_database(url: str) -> sessionmaker[Session]:
     engine = make_engine(url)
     Base.metadata.create_all(engine)
     upgrade_audit_hashes(engine)
+    upgrade_fetch_input(engine)
     upgrade_session_csrf(engine)
     upgrade_document_blob_key(engine)
     upgrade_workpapers(engine)

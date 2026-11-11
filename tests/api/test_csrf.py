@@ -22,6 +22,7 @@ from app.models import (
     DemoSession,
     Fact,
     IdempotencyKey,
+    Job,
     JournalEntryDraft,
     LiabilityLine,
     Person,
@@ -457,7 +458,7 @@ def test_origin_allowlist_is_exact_and_unset_accepts_a_missing_origin(
             },
         )
         assert absent.status_code == 403
-        assert _count(client, Purchase) == 1
+        assert _count(client, Job) == 1
         assert _has_key(client, "event-blocked") is False
         assert _has_key(client, "event-absent") is False
 
