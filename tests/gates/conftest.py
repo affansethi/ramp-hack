@@ -17,6 +17,7 @@ from app.api.guards import CSRF_HEADER
 from app.api.routes import COOKIE
 from app.config import load_settings
 from app.main import create_app
+from app.models import Job
 from app.worker.poller import poll_once
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -103,5 +104,14 @@ def _run(client: TestClient, scenario: str, key: str) -> dict[str, object]:
     )
     assert response.status_code == 200, response.text
     body = response.json()
-    assert poll_once(client.app.state.ctx) == 1 or body["duplicate"] is True
+    ctx = client.app.state.ctx
+    assert poll_once(ctx) == 1 or body["duplicate"] is True
+    if body.get("purchase_id") is None:
+        # IDs-only intake (#25): the fetch job creates the purchase, then the
+        # advance job runs the pipeline.
+        with ctx.session_factory() as session:
+            job = session.get(Job, body["job_id"])
+            assert job is not None
+            body["purchase_id"] = job.purchase_id
+        assert poll_once(ctx) == 1
     return body
