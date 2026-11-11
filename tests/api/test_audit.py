@@ -53,11 +53,14 @@ def test_fact_versions_chain_and_review_keeps_version(tmp_path: Path) -> None:
             updated = edited.json()
             assert updated["facts_version"] == detail["facts_version"] + 1
             detail = updated
-        rows = client.get(
-            "/api/v1/audit-events", params={"object_id": purchase_id}
-        ).json()["audit_events"]
+        rows = [
+            row
+            for row in client.get(
+                "/api/v1/audit-events", params={"object_id": purchase_id}
+            ).json()["audit_events"]
+            if row["actor_id"] != "system"
+        ]
         assert len(rows) == 2
-        assert rows[0]["before_hash"] == ""
         assert rows[1]["before_hash"] == rows[0]["after_hash"]
         assert rows[1]["after_hash"] != rows[0]["after_hash"]
         for row in rows:
@@ -299,7 +302,10 @@ def test_concurrent_first_referrals_chain_through_commit(
         def refer(index: int) -> int:
             response = client.post(
                 f"/api/v1/determinations/{determination['id']}/refer",
-                json={"action": "leave_open"},
+                json={
+                    "action": "leave_open",
+                    "expected_version": determination["version"],
+                },
                 headers=_headers(f"concurrent-refer-{index}"),
             )
             assert response.status_code == 200, response.text

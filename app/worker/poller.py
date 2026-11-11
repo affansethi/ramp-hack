@@ -1,5 +1,6 @@
 """In-process poller. One thread, leases in the jobs table, no duplicate effects."""
 
+import json
 import logging
 import threading
 from collections.abc import Callable
@@ -11,7 +12,7 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from app.clock import utcnow
 from app.context import AppContext
-from app.domain.pipeline import advance_purchase
+from app.domain.pipeline import advance_purchase, ingest_fetched_record
 from app.domain.ruleset import load_ruleset
 from app.models import Job
 
@@ -76,9 +77,20 @@ def _advance(ctx: AppContext, session: Session, job: Job) -> None:
     advance_purchase(session, job.purchase_id, load_ruleset(ctx.rules_dir))
 
 
+def _fetch(ctx: AppContext, session: Session, job: Job) -> None:
+    if job.purchase_id is not None:
+        return
+    payload = json.loads(job.input_payload or "{}")
+    record = ctx.ramp.fetch(
+        payload["event_type"], payload["object_id"], payload["receipt_id"]
+    )
+    ingest_fetched_record(session, job, record)
+
+
 # Fetch and import handlers can be added here without changing the claim query.
 _HANDLERS: dict[str, Callable[[AppContext, Session, Job], None]] = {
     "advance": _advance,
+    "fetch": _fetch,
 }
 
 
@@ -114,9 +126,10 @@ def _poll(ctx: AppContext) -> int:
             error_code = "UNKNOWN_JOB_KIND"
             raise ValueError(f"unknown job kind: {job.kind}")
         if job.kind != "advance":
-            error_code = "JOB_FAILED"
+            error_code = "FETCH_FAILED" if job.kind == "fetch" else "JOB_FAILED"
         handler(ctx, session, job)
-        job.status = "SUCCEEDED"
+        if job.status != "FAILED":
+            job.status = "SUCCEEDED"
         job.lease_until = None
         session.commit()
         return 1

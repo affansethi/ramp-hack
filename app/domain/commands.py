@@ -3,8 +3,10 @@
 import csv
 import io
 import json
+import re
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+from decimal import ROUND_HALF_UP, Decimal
 from hashlib import sha256
 from pathlib import Path
 from typing import NamedTuple
@@ -27,11 +29,13 @@ from app.models import (
     Hold,
     JournalEntryDraft,
     LiabilityLine,
+    Person,
     Purchase,
     PurchaseLine,
     RefundCandidate,
     RefundLetterDraft,
     ReviewDecision,
+    SetupRow,
     Workpaper,
     WorkpaperLine,
 )
@@ -176,6 +180,17 @@ def add_human_fact(
     return purchase
 
 
+def _require_named_reviewer(session: Session, org_id: str, actor_id: str) -> None:
+    person = session.get(Person, actor_id)
+    if (
+        person is None
+        or person.org_id != org_id
+        or not person.name.strip()
+        or person.role != "reviewer"
+    ):
+        raise DomainError("FORBIDDEN", "A named reviewer is required to decide.", 403)
+
+
 def review_determination(
     session: Session,
     *,
@@ -188,6 +203,7 @@ def review_determination(
     expected_version: int,
     rules_dir: str = "rules",
 ) -> Determination:
+    _require_named_reviewer(session, org_id, actor_id)
     determination = _determination(session, org_id, determination_id)
     if determination.version != expected_version or not determination.is_current:
         raise DomainError(
@@ -250,9 +266,15 @@ def refer_determination(
     determination_id: str,
     action: str,
     note: str,
+    expected_version: int,
 ) -> Determination:
+    _require_named_reviewer(session, org_id, actor_id)
     determination = _determination(session, org_id, determination_id)
-    if not determination.is_current or determination.label != "NEEDS_HUMAN_REVIEW":
+    if determination.version != expected_version or not determination.is_current:
+        raise DomainError(
+            "STALE_VERSION", "This result changed. Reload it and try again.", 409
+        )
+    if determination.label != "NEEDS_HUMAN_REVIEW":
         raise DomainError(
             "NEEDS_HUMAN_REVIEW_NOT_APPROVABLE",
             "Refer is only for a current needs-human-review result.",
@@ -298,6 +320,15 @@ def collect_totals(session: Session, org_id: str) -> dict[str, object]:
     nhr_count = 0
     error_count = 0
     unreviewed_by_direction: dict[str, int] = {}
+    directional_unreviewed: dict[str, int] = {
+        "LIABILITY": 0,
+        "REFUND_CANDIDATE": 0,
+        "CHARGED_CORRECTLY": 0,
+    }
+    unreviewed_by_jurisdiction: dict[str, int] = {}
+    nhr_by_jurisdiction: dict[str, int] = {}
+    error_by_jurisdiction: dict[str, int] = {}
+    item_nhr_count = 0
     for determination in session.scalars(
         select(Determination).where(Determination.org_id == org_id)
     ).all():
@@ -307,15 +338,35 @@ def collect_totals(session: Session, org_id: str) -> dict[str, object]:
             or determination.unit_status in ("REJECTED", "SUPERSEDED")
         ):
             continue
+        jurisdiction = determination.jurisdiction or ""
         if determination.unit_status == "DETERMINATION_ERROR":
             error_count += 1
+            if jurisdiction and jurisdiction != "ITEM":
+                error_by_jurisdiction[jurisdiction] = (
+                    error_by_jurisdiction.get(jurisdiction, 0) + 1
+                )
         elif determination.label == "NEEDS_HUMAN_REVIEW":
             nhr_count += 1
+            if jurisdiction == "ITEM":
+                item_nhr_count += 1
+            elif jurisdiction:
+                nhr_by_jurisdiction[jurisdiction] = (
+                    nhr_by_jurisdiction.get(jurisdiction, 0) + 1
+                )
         elif determination.unit_status == "READY_FOR_REVIEW":
             direction = determination.direction or "UNKNOWN"
             unreviewed_by_direction[direction] = (
                 unreviewed_by_direction.get(direction, 0) + 1
             )
+            if (
+                determination.label == "ENGINE_SUPPORTED"
+                and direction in directional_unreviewed
+            ):
+                directional_unreviewed[direction] += 1
+            if jurisdiction and jurisdiction != "ITEM":
+                unreviewed_by_jurisdiction[jurisdiction] = (
+                    unreviewed_by_jurisdiction.get(jurisdiction, 0) + 1
+                )
         elif (
             determination.unit_status == "APPROVED"
             and determination.direction == "LIABILITY"
@@ -374,6 +425,47 @@ def collect_totals(session: Session, org_id: str) -> dict[str, object]:
     }
     if held_ids:
         held["purchase_amount"] = {"value": f"{held_amount:.2f}", "currency": "USD"}
+    item_count = len(purchases)
+    held_count = len(held_ids)
+    if item_count == 0:
+        hold_percent: str | None = None
+        hold_message: str | None = "No items yet"
+    else:
+        raw = (Decimal(held_count) * Decimal(100)) / Decimal(item_count)
+        hold_percent = f"{raw.quantize(Decimal('0.1'), rounding=ROUND_HALF_UP):.1f}"
+        hold_message = None
+    hold_rate: dict[str, object] = {
+        "held_count": held_count,
+        "item_count": item_count,
+        "percent": hold_percent,
+        "label": "share of current items on hold",
+        "message": hold_message,
+    }
+    declared = _declared_jurisdictions(session, org_id)
+    jurisdiction_rows = []
+    for name in declared:
+        periods = []
+        for (jurisdiction, period), amounts in sorted(grouped.items()):
+            if jurisdiction != name:
+                continue
+            total = sum((parse_decimal(value) for value in amounts), parse_decimal("0"))
+            periods.append(
+                {
+                    "period": period,
+                    "total": {"value": f"{total:.2f}", "currency": "USD"},
+                    "line_count": len(amounts),
+                }
+            )
+        jurisdiction_rows.append(
+            {
+                "jurisdiction": name,
+                "approved_liabilities": periods if periods else None,
+                "message": None if periods else "No approved liabilities",
+                "unreviewed_count": unreviewed_by_jurisdiction.get(name, 0),
+                "needs_human_review_count": nhr_by_jurisdiction.get(name, 0),
+                "error_count": error_by_jurisdiction.get(name, 0),
+            }
+        )
     return {
         "approved_liabilities": {
             "by_jurisdiction": groups,
@@ -396,7 +488,31 @@ def collect_totals(session: Session, org_id: str) -> dict[str, object]:
                 for direction, count in sorted(unreviewed_by_direction.items())
             ]
         },
+        "hold_rate": hold_rate,
+        "unreviewed_by_direction": dict(directional_unreviewed),
+        "pre_close": {
+            "jurisdictions": jurisdiction_rows,
+            "item_level": {
+                "needs_human_review_count": item_nhr_count,
+                "held_count": held_count,
+            },
+        },
     }
+
+
+def _declared_jurisdictions(session: Session, org_id: str) -> list[str]:
+    rows = list(
+        session.scalars(select(SetupRow).where(SetupRow.org_id == org_id)).all()
+    )
+    names: list[str] = []
+    for row in rows:
+        for part in (row.jurisdictions or "").split(","):
+            name = part.strip()
+            if name and name not in names:
+                names.append(name)
+    if not names:
+        names = ["CA", "WA", "NY"]
+    return names
 
 
 _BANNER = "Synthetic demo data"
@@ -663,6 +779,11 @@ def _approve_refund(
     )
 
 
+_REFUND_LETTER_BASIS: dict[tuple[str, str | None], str] = {
+    ("CA", "REMOTE_ACCESS_SAAS"): "ca_saas_vendor_tax"
+}
+
+
 def _filing_basis_text(
     rules_dir: str, purchase: Purchase, determination: Determination
 ) -> str:
@@ -679,15 +800,20 @@ def _filing_basis_text(
             continue
         if current and line and not line.startswith("#"):
             sections[current].append(line)
-    key = "ca_saas_vendor_tax"
-    if determination.jurisdiction == "NY":
-        key = "ny_hardware_use_tax"
-    elif determination.jurisdiction == "WA":
-        key = "wa_use_tax_journal"
-    text = " ".join(sections.get(key, []))
-    banned = ("was sent", "letter was sent")
-    if any(phrase in text.lower() for phrase in banned):
+    # Only a basis written for a vendor refund letter may enter one. The NY form
+    # note and the WA journal note serve other drafts, so a refund in those
+    # states keeps an empty basis and the unsigned note.
+    key = _REFUND_LETTER_BASIS.get((determination.jurisdiction, purchase.category))
+    if key is None:
         return ""
+    text = " ".join(sections.get(key, []))
+    lowered = text.lower()
+    if "was sent" in lowered:
+        return ""
+    # "filed" or "paid" only in a sentence that also says simulated (RG-8).
+    for sentence in re.split(r"[.!?]", lowered):
+        if re.search(r"\b(filed|paid)\b", sentence) and "simulated" not in sentence:
+            return ""
     return text
 
 

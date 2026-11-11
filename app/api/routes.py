@@ -21,7 +21,12 @@ from starlette.datastructures import QueryParams
 from app.adapters.ramp import signature_matches
 from app.api.guards import COOKIE, new_csrf_token
 from app.api.idempotency import begin, finish
-from app.api.serialize import meta, purchase_detail, purchase_summary
+from app.api.serialize import (
+    meta,
+    purchase_detail,
+    purchase_summary,
+    workpaper_detail,
+)
 from app.clock import utcnow
 from app.contracts.jobs import read_job
 from app.demo.scenarios import get_scenario, scenario_ids
@@ -37,7 +42,7 @@ from app.domain.commands import (
 )
 from app.domain.errors import DomainError
 from app.domain.evaluate import quarter_key
-from app.domain.pipeline import ingest_scenario, ingest_webhook
+from app.domain.pipeline import ingest_webhook
 from app.models import (
     AuditEvent,
     DemoSession,
@@ -103,6 +108,7 @@ class ReferBody(BaseModel):
 
     action: Literal["leave_open", "send_to_advisor"]
     note: str = ""
+    expected_version: int
 
 
 class WorkpaperBody(BaseModel):
@@ -286,11 +292,20 @@ def demo_event(body: ScenarioBody, request: Request, session: Db) -> dict[str, o
     scenario = get_scenario(body.scenario)
     if scenario is None:
         raise DomainError("NOT_FOUND", "Unknown scenario.", 404)
-    result = ingest_scenario(session, scenario, viewer.org_id)
+    result = ingest_webhook(
+        session,
+        viewer.org_id,
+        event_id=scenario.event_id,
+        event_type="transactions.receipt_added",
+        object_id=scenario.event_id,
+        signature_ok=True,
+        demo_scenario=scenario.id,
+    )
     payload: dict[str, object] = {
         **meta(request.app.state.settings),
         "purchase_id": result.purchase_id,
         "job_id": result.job_id,
+        "source": "simulated Ramp webhook",
         "duplicate": result.duplicate,
         "scenario": body.scenario,
     }
@@ -316,44 +331,40 @@ async def webhook(request: Request, session: Db) -> JSONResponse:
     if not isinstance(payload_in, dict):
         raise DomainError("BAD_REQUEST", "Webhook body must be an object.", 400)
     event_id = payload_in.get("id")
-    transaction = payload_in.get("transaction")
-    if not isinstance(event_id, str) or not isinstance(transaction, dict):
+    event_type = payload_in.get("type")
+    data = payload_in.get("data")
+    if (
+        not isinstance(event_id, str)
+        or not event_id
+        or event_type
+        not in ("transactions.receipt_added", "transactions.cleared", "bills.created")
+        or not isinstance(data, dict)
+        or not isinstance(data.get("id"), str)
+        or not data["id"]
+    ):
         raise DomainError(
-            "BAD_REQUEST", "Webhook needs an id and a transaction object.", 400
+            "BAD_REQUEST", "Webhook needs an id, supported type and data.id.", 400
         )
-    amount = transaction.get("amount")
-    if not isinstance(amount, str):
-        raise DomainError(
-            "BAD_REQUEST", "Transaction amount must be a decimal string.", 422
-        )
-    currency = transaction.get("currency_code")
-    if not isinstance(currency, str):
-        currency = "USD"
-    when = transaction.get("user_transaction_time")
-    invoice_date = (
-        when[:10] if isinstance(when, str) and len(when) >= 10 else "2026-11-15"
-    )
-    vendor = transaction.get("merchant_name")
-    if not isinstance(vendor, str):
-        vendor = "Synthetic vendor"
-    transaction_id = transaction.get("id")
-    if not isinstance(transaction_id, str):
-        transaction_id = event_id
+    receipt_id = data.get("receipt_id")
+    if receipt_id is not None and (not isinstance(receipt_id, str) or not receipt_id):
+        raise DomainError("BAD_REQUEST", "receipt_id must be a nonempty string.", 400)
+    if set(data) - {"id", "receipt_id"}:
+        raise DomainError("BAD_REQUEST", "Webhook data carries IDs only.", 400)
     result = ingest_webhook(
         session,
         ORG_ID,
         event_id=event_id,
-        transaction_id=transaction_id,
-        vendor=vendor,
-        amount=amount,
-        currency=currency,
-        invoice_date=invoice_date,
+        event_type=event_type,
+        object_id=data["id"],
+        receipt_id=receipt_id,
         signature_ok=True,
+        raw_payload=raw.decode("utf-8"),
     )
     payload: dict[str, object] = {
         **meta(request.app.state.settings),
         "purchase_id": result.purchase_id,
         "job_id": result.job_id,
+        "source": "simulated Ramp webhook",
         "duplicate": result.duplicate,
     }
     finish(session, ORG_ID, key or "", raw.decode("utf-8"), payload)
@@ -520,6 +531,7 @@ def refer(
         determination_id=determination_id,
         action=body.action,
         note=body.note,
+        expected_version=body.expected_version,
     )
     row = session.get(Purchase, determination.purchase_id)
     if row is None:
@@ -618,6 +630,18 @@ def mark_ready(
     payload = _workpaper_json(request, session, workpaper)
     finish(session, viewer.org_id, _key(request) or "", canonical, payload)
     return payload
+
+
+@router.get("/workpapers/{workpaper_id}")
+def workpaper(workpaper_id: str, request: Request, session: Db) -> dict[str, object]:
+    viewer = _viewer(request, session)
+    row = session.get(Workpaper, workpaper_id)
+    if row is None or row.org_id != viewer.org_id:
+        raise DomainError("NOT_FOUND", "Workpaper not found.", 404)
+    return {
+        **meta(request.app.state.settings),
+        **workpaper_detail(session, row),
+    }
 
 
 @router.get("/workpapers/{workpaper_id}/export")
