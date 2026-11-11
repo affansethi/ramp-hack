@@ -5,6 +5,7 @@ import io
 import json
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+from decimal import ROUND_HALF_UP, Decimal
 from hashlib import sha256
 from pathlib import Path
 from typing import NamedTuple
@@ -32,6 +33,7 @@ from app.models import (
     RefundCandidate,
     RefundLetterDraft,
     ReviewDecision,
+    SetupRow,
     Workpaper,
     WorkpaperLine,
 )
@@ -295,6 +297,15 @@ def collect_totals(session: Session, org_id: str) -> dict[str, object]:
     nhr_count = 0
     error_count = 0
     unreviewed_by_direction: dict[str, int] = {}
+    directional_unreviewed: dict[str, int] = {
+        "LIABILITY": 0,
+        "REFUND_CANDIDATE": 0,
+        "CHARGED_CORRECTLY": 0,
+    }
+    unreviewed_by_jurisdiction: dict[str, int] = {}
+    nhr_by_jurisdiction: dict[str, int] = {}
+    error_by_jurisdiction: dict[str, int] = {}
+    item_nhr_count = 0
     for determination in session.scalars(
         select(Determination).where(Determination.org_id == org_id)
     ).all():
@@ -304,15 +315,35 @@ def collect_totals(session: Session, org_id: str) -> dict[str, object]:
             or determination.unit_status in ("REJECTED", "SUPERSEDED")
         ):
             continue
+        jurisdiction = determination.jurisdiction or ""
         if determination.unit_status == "DETERMINATION_ERROR":
             error_count += 1
+            if jurisdiction and jurisdiction != "ITEM":
+                error_by_jurisdiction[jurisdiction] = (
+                    error_by_jurisdiction.get(jurisdiction, 0) + 1
+                )
         elif determination.label == "NEEDS_HUMAN_REVIEW":
             nhr_count += 1
+            if jurisdiction == "ITEM":
+                item_nhr_count += 1
+            elif jurisdiction:
+                nhr_by_jurisdiction[jurisdiction] = (
+                    nhr_by_jurisdiction.get(jurisdiction, 0) + 1
+                )
         elif determination.unit_status == "READY_FOR_REVIEW":
             direction = determination.direction or "UNKNOWN"
             unreviewed_by_direction[direction] = (
                 unreviewed_by_direction.get(direction, 0) + 1
             )
+            if (
+                determination.label == "ENGINE_SUPPORTED"
+                and direction in directional_unreviewed
+            ):
+                directional_unreviewed[direction] += 1
+            if jurisdiction and jurisdiction != "ITEM":
+                unreviewed_by_jurisdiction[jurisdiction] = (
+                    unreviewed_by_jurisdiction.get(jurisdiction, 0) + 1
+                )
         elif (
             determination.unit_status == "APPROVED"
             and determination.direction == "LIABILITY"
@@ -371,6 +402,47 @@ def collect_totals(session: Session, org_id: str) -> dict[str, object]:
     }
     if held_ids:
         held["purchase_amount"] = {"value": f"{held_amount:.2f}", "currency": "USD"}
+    item_count = len(purchases)
+    held_count = len(held_ids)
+    if item_count == 0:
+        hold_percent: str | None = None
+        hold_message: str | None = "No items yet"
+    else:
+        raw = (Decimal(held_count) * Decimal(100)) / Decimal(item_count)
+        hold_percent = f"{raw.quantize(Decimal('0.1'), rounding=ROUND_HALF_UP):.1f}"
+        hold_message = None
+    hold_rate: dict[str, object] = {
+        "held_count": held_count,
+        "item_count": item_count,
+        "percent": hold_percent,
+        "label": "share of current items on hold",
+        "message": hold_message,
+    }
+    declared = _declared_jurisdictions(session, org_id)
+    jurisdiction_rows = []
+    for name in declared:
+        periods = []
+        for (jurisdiction, period), amounts in sorted(grouped.items()):
+            if jurisdiction != name:
+                continue
+            total = sum((parse_decimal(value) for value in amounts), parse_decimal("0"))
+            periods.append(
+                {
+                    "period": period,
+                    "total": {"value": f"{total:.2f}", "currency": "USD"},
+                    "line_count": len(amounts),
+                }
+            )
+        jurisdiction_rows.append(
+            {
+                "jurisdiction": name,
+                "approved_liabilities": periods if periods else None,
+                "message": None if periods else "No approved liabilities",
+                "unreviewed_count": unreviewed_by_jurisdiction.get(name, 0),
+                "needs_human_review_count": nhr_by_jurisdiction.get(name, 0),
+                "error_count": error_by_jurisdiction.get(name, 0),
+            }
+        )
     return {
         "approved_liabilities": {
             "by_jurisdiction": groups,
@@ -393,7 +465,31 @@ def collect_totals(session: Session, org_id: str) -> dict[str, object]:
                 for direction, count in sorted(unreviewed_by_direction.items())
             ]
         },
+        "hold_rate": hold_rate,
+        "unreviewed_by_direction": dict(directional_unreviewed),
+        "pre_close": {
+            "jurisdictions": jurisdiction_rows,
+            "item_level": {
+                "needs_human_review_count": item_nhr_count,
+                "held_count": held_count,
+            },
+        },
     }
+
+
+def _declared_jurisdictions(session: Session, org_id: str) -> list[str]:
+    rows = list(
+        session.scalars(select(SetupRow).where(SetupRow.org_id == org_id)).all()
+    )
+    names: list[str] = []
+    for row in rows:
+        for part in (row.jurisdictions or "").split(","):
+            name = part.strip()
+            if name and name not in names:
+                names.append(name)
+    if not names:
+        names = ["CA", "WA", "NY"]
+    return names
 
 
 _BANNER = "Synthetic demo data"
