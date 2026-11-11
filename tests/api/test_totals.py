@@ -232,6 +232,138 @@ def test_held_omits_purchase_amount_when_empty(tmp_path: Path) -> None:
         assert_refund_candidates_stay_separate(totals)
 
 
+def test_hold_rate_is_null_with_message_when_no_items(tmp_path: Path) -> None:
+    with _client(tmp_path, _NONE) as client:
+        totals = _get(client, "/api/v1/totals")
+        hold_rate = totals["hold_rate"]
+        assert isinstance(hold_rate, dict)
+        assert hold_rate["held_count"] == 0
+        assert hold_rate["item_count"] == 0
+        assert hold_rate["percent"] is None
+        assert hold_rate["message"] == "No items yet"
+        assert hold_rate["label"] == "share of current items on hold"
+        pre_close = totals["pre_close"]
+        assert isinstance(pre_close, dict)
+        rows = pre_close["jurisdictions"]
+        assert isinstance(rows, list)
+        assert [row["jurisdiction"] for row in rows] == ["CA", "WA", "NY"]
+        assert_refund_candidates_stay_separate(totals)
+
+
+def test_pre_close_rows_say_no_liabilities_before_approval(
+    tmp_path: Path,
+) -> None:
+    with _client(tmp_path, _BOTH) as client:
+        _run(client, "case1", "case1")
+        totals = _get(client, "/api/v1/totals")
+        pre_close = totals["pre_close"]
+        assert isinstance(pre_close, dict)
+        rows = pre_close["jurisdictions"]
+        assert isinstance(rows, list)
+        assert [row["jurisdiction"] for row in rows] == ["CA", "WA", "NY"]
+        for row in rows:
+            assert row["approved_liabilities"] is None
+            assert row["message"] == "No approved liabilities"
+            assert isinstance(row["unreviewed_count"], int)
+            assert isinstance(row["needs_human_review_count"], int)
+            assert isinstance(row["error_count"], int)
+        assert "0.00" not in json.dumps(pre_close)
+        wa = next(row for row in rows if row["jurisdiction"] == "WA")
+        assert wa["unreviewed_count"] == 1
+        item_level = pre_close["item_level"]
+        assert isinstance(item_level, dict)
+        assert item_level["held_count"] == 0
+        assert_refund_candidates_stay_separate(totals)
+
+
+def test_pre_close_wa_row_copies_liability_after_approval(
+    tmp_path: Path,
+) -> None:
+    with _client(tmp_path, _CASE1) as client:
+        created = _run(client, "case1", "case1")
+        detail = _get(client, f"/api/v1/purchases/{created['purchase_id']}")
+        determination = detail["determinations"][0]
+        assert isinstance(determination, dict)
+        engine_amount = determination["engine_amount"]
+        assert isinstance(engine_amount, dict)
+        engine = engine_amount["value"]
+        approved = client.post(
+            f"/api/v1/determinations/{determination['id']}/review",
+            json={
+                "action": "approve",
+                "approval_path": "LIABILITY",
+                "reason": "Reviewed",
+                "expected_version": determination["version"],
+            },
+            headers=_headers("approve-case1"),
+        )
+        assert approved.status_code == 200, approved.text
+        totals = _get(client, "/api/v1/totals")
+        rows = totals["pre_close"]["jurisdictions"]
+        assert isinstance(rows, list)
+        wa = next(row for row in rows if row["jurisdiction"] == "WA")
+        assert wa["approved_liabilities"] == [
+            {
+                "period": "2026Q4",
+                "total": {"value": engine, "currency": "USD"},
+                "line_count": 1,
+            }
+        ]
+        assert wa["message"] is None
+        for row in rows:
+            if row["jurisdiction"] == "WA":
+                continue
+            assert row["approved_liabilities"] is None
+            assert row["message"] == "No approved liabilities"
+        if engine != "0.00":
+            assert "0.00" not in json.dumps(totals["pre_close"])
+        assert_refund_candidates_stay_separate(totals)
+
+
+def test_unreviewed_by_direction_counts_only(tmp_path: Path) -> None:
+    with _client(tmp_path, _CASE3) as client:
+        created = _run(client, "case3", "case3")
+        detail = _get(client, f"/api/v1/purchases/{created['purchase_id']}")
+        determination = detail["determinations"][0]
+        assert isinstance(determination, dict)
+        assert determination["direction"] == "REFUND_CANDIDATE"
+        engine_amount = determination["engine_amount"]
+        assert isinstance(engine_amount, dict)
+        totals = _get(client, "/api/v1/totals")
+        by_direction = totals["unreviewed_by_direction"]
+        assert by_direction == {
+            "LIABILITY": 0,
+            "REFUND_CANDIDATE": 1,
+            "CHARGED_CORRECTLY": 0,
+        }
+        assert "amount" not in json.dumps(by_direction)
+        assert engine_amount["value"] not in json.dumps(totals)
+        assert_refund_candidates_stay_separate(totals)
+
+
+def test_hold_rate_counts_held_share_with_decimal(tmp_path: Path) -> None:
+    with _client(tmp_path, _BOTH) as client:
+        _run(client, "case1", "held-case1")
+        _run(client, "case2", "held-case2")
+        _run(client, "case3", "held-case3")
+        _run(client, "case4", "held-case4")
+        _run(client, "case6", "held-case6")
+        totals = _get(client, "/api/v1/totals")
+        hold_rate = totals["hold_rate"]
+        assert isinstance(hold_rate, dict)
+        assert hold_rate["held_count"] == 1
+        assert hold_rate["item_count"] == 5
+        assert hold_rate["percent"] == "20.0"
+        assert isinstance(hold_rate["percent"], str)
+        assert hold_rate["label"] == "share of current items on hold"
+        assert hold_rate["message"] is None
+        assert "amount" not in json.dumps(hold_rate)
+        item_level = totals["pre_close"]["item_level"]
+        assert isinstance(item_level, dict)
+        assert item_level["held_count"] == 1
+        assert_refund_candidates_stay_separate(totals)
+
+
 def test_scenario_copy_leaves_unrelated_rules_unchanged(tmp_path: Path) -> None:
     repo = {
         name: (ROOT / "rules" / name).read_bytes()
