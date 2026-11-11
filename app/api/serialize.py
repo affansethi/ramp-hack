@@ -193,6 +193,7 @@ def purchase_detail(
                 "prompt": _PROMPTS.get(
                     question.fact_key, f"Send a sourced value for {question.fact_key}."
                 ),
+                # Stored recipient for the held queue (#32; read-only, not a tax field).
                 "recipient": question.recipient,
                 "answer": question.answer,
                 "state": question.state,
