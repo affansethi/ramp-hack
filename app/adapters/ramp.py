@@ -48,7 +48,7 @@ class RampSimulator:
 
     def fetch(
         self, event_type: str, object_id: str, receipt_id: str | None
-    ) -> dict[str, str | None]:
+    ) -> dict[str, Any]:
         records = self.bills if event_type == "bills.created" else self.transactions
         record = records[object_id]
         receipt_ids = dict.fromkeys(
@@ -68,6 +68,25 @@ class RampSimulator:
             if taxes
             else None
         )
+        merchant = record.get("merchant_location") or {}
+        holder = record.get("card_holder") or {}
+        # Tech Spec v2 §8: merchant_data.receipt.items[]
+        # {description, quantity, unit_cost, tax, total}.
+        receipt = (record.get("merchant_data") or {}).get("receipt")
+        receipt_items = receipt.get("items") or [] if isinstance(receipt, dict) else []
+        ocr_lines = [
+            line
+            for rid in receipt_ids
+            for line in self.receipts.get(rid, {}).get("ocr", {}).get("line_items", [])
+        ]
+        mismatch = (
+            bool(merchant)
+            and bool(holder.get("location_name"))
+            and (
+                str(merchant.get("state") or "")
+                != str(holder.get("location_name") or "").split(",")[-1].strip()
+            )
+        )
         return dict(
             entity_amount=record["entity_amount"],
             currency_code=record["currency_code"],
@@ -76,6 +95,11 @@ class RampSimulator:
             invoice_date=_invoice_date(record),
             transaction_date=_transaction_date(record),
             ocr_taxes=total,
+            receipt_items=receipt_items,
+            ocr_line_items=ocr_lines,
+            card_holder=holder.get("location_name"),
+            merchant_location_mismatch=mismatch,
+            bill_to=record.get("bill_to"),
         )
 
 

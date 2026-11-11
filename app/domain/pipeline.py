@@ -4,6 +4,7 @@ import json
 from dataclasses import asdict, dataclass, replace
 from datetime import date
 from hashlib import sha256
+from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -232,9 +233,7 @@ def ingest_webhook(
     return IngestResult(None, event.id, False, event.id)
 
 
-def ingest_fetched_record(
-    session: Session, job: Job, record: dict[str, str | None]
-) -> None:
+def ingest_fetched_record(session: Session, job: Job, record: dict[str, Any]) -> None:
     event = session.get(SourceEvent, job.id)
     if event is None:
         raise ValueError("missing source event")
@@ -256,7 +255,7 @@ def ingest_fetched_record(
     if existing is not None:
         # Amount and OCR feed the cross-check. A new value versions the purchase,
         # supersedes the current result, and queues that check again.
-        _refresh_fetched_inputs(session, existing, amount, tax)
+        _refresh_fetched_inputs(session, existing, amount, tax, record)
         _stage_audit(
             session,
             job.org_id,
@@ -273,7 +272,7 @@ def ingest_fetched_record(
         session, job.org_id, vendor, invoice_number, invoice_date, amount
     )
     if matched is not None:
-        _link_exact_invoice(session, matched, event, tax, job=job)
+        _link_exact_invoice(session, matched, event, tax, job=job, record=record)
         return
     scenario = (
         get_scenario(inputs["demo_scenario"]) if inputs.get("demo_scenario") else None
@@ -324,6 +323,14 @@ def ingest_fetched_record(
     if result.purchase_id is not None:
         for other in ambiguous:
             _record_ambiguous(session, job.org_id, result.purchase_id, other.id)
+        if scenario is None:
+            purchase = session.get(Purchase, result.purchase_id)
+            document = session.scalar(
+                select(Document).where(Document.purchase_id == result.purchase_id)
+            )
+            if purchase is not None and document is not None:
+                pending = _pending_ramp_evidence(session, purchase, record)
+                _apply_ramp_evidence(session, purchase, pending)
 
 
 def _purchase_for_ramp_object(
@@ -366,7 +373,11 @@ def _purchase_for_ramp_object(
 
 
 def _refresh_fetched_inputs(
-    session: Session, purchase: Purchase, amount: str, tax: str | None
+    session: Session,
+    purchase: Purchase,
+    amount: str,
+    tax: str | None,
+    record: dict[str, Any] | None = None,
 ) -> None:
     changed = False
     if purchase.ramp_entity_amount != amount:
@@ -375,10 +386,12 @@ def _refresh_fetched_inputs(
     if purchase.ramp_ocr_taxes != tax:
         purchase.ramp_ocr_taxes = tax
         changed = True
-    if not changed:
+    pending = _pending_ramp_evidence(session, purchase, record) if record else []
+    if not changed and not pending:
         return
     purchase.facts_version += 1
     _supersede_current(session, purchase)
+    _apply_ramp_evidence(session, purchase, pending)
     _enqueue(session, purchase.org_id, purchase.id)
 
 
@@ -748,6 +761,177 @@ def _write_facts(
             )
 
 
+@dataclass(frozen=True)
+class _RampEvidence:
+    key: str
+    line_id: str | None
+    value: str
+    confirmation: str
+    rung: int | None
+    passage: str
+
+
+# Ramp receipt and OCR items are sourced evidence for review and the
+# cross-check (Tech Spec v2 §8). They use their own keys so a Ramp value never
+# silently replaces an admitted line_amount or tax_charged fact.
+_RECEIPT_FIELDS = (
+    ("description", "receipt_line_description", False),
+    ("total", "receipt_line_amount", True),
+    ("tax", "receipt_line_tax", True),
+)
+_OCR_FIELDS = (
+    ("description", "ocr_line_description", False),
+    ("amount", "ocr_line_amount", True),
+    ("tax_amount", "ocr_line_tax", True),
+)
+
+
+def _ramp_evidence(record: dict[str, Any], line_ids: list[str]) -> list[_RampEvidence]:
+    found: list[_RampEvidence] = []
+
+    def items(name: str, fields: tuple[tuple[str, str, bool], ...], label: str) -> None:
+        for index, item in enumerate(record.get(name) or []):
+            if not isinstance(item, dict):
+                continue
+            line_id = line_ids[index] if index < len(line_ids) else None
+            for source_key, key, money in fields:
+                value = item.get(source_key)
+                if not isinstance(value, str) or not value.strip():
+                    continue
+                if money:
+                    parse_decimal(value)  # decimal string or refuse, never float
+                found.append(
+                    _RampEvidence(
+                        key,
+                        line_id,
+                        value,
+                        "UNCONFIRMED",
+                        None,
+                        f"{label} item {index + 1} {source_key} {value}",
+                    )
+                )
+
+    items("receipt_items", _RECEIPT_FIELDS, "Ramp merchant_data.receipt")
+    items("ocr_line_items", _OCR_FIELDS, "Ramp receipt OCR")
+    holder = record.get("card_holder")
+    if isinstance(holder, str) and holder.strip():
+        found.append(
+            _RampEvidence(
+                "user_location",
+                None,
+                holder.strip(),
+                "UNCONFIRMED",
+                5,
+                "card_holder is rung 5 and does not confirm use",
+            )
+        )
+    if record.get("merchant_location_mismatch"):
+        found.append(
+            _RampEvidence(
+                "merchant_location_mismatch",
+                None,
+                "true",
+                "UNCONFIRMED",
+                None,
+                "Merchant-location mismatch is a flag only, not a location fact",
+            )
+        )
+    bill_to = record.get("bill_to")
+    if isinstance(bill_to, str) and bill_to.strip():
+        found.append(
+            _RampEvidence(
+                "bill_to",
+                None,
+                bill_to.strip(),
+                "UNCONFIRMED",
+                None,
+                "Bill-to is context only and does not confirm use or delivery.",
+            )
+        )
+    return found
+
+
+def _pending_ramp_evidence(
+    session: Session, purchase: Purchase, record: dict[str, Any]
+) -> list[tuple[_RampEvidence, Fact | None]]:
+    """Ramp evidence that is new or changed, with the fact each one replaces."""
+    line_ids = list(
+        session.scalars(
+            select(PurchaseLine.id)
+            .where(PurchaseLine.purchase_id == purchase.id)
+            .order_by(PurchaseLine.line_number)
+        ).all()
+    )
+    current = list(
+        session.scalars(
+            select(Fact).where(
+                Fact.purchase_id == purchase.id,
+                Fact.origin == "RAMP_RECORD",
+                Fact.is_current.is_(True),
+            )
+        ).all()
+    )
+    pending: list[tuple[_RampEvidence, Fact | None]] = []
+    for item in _ramp_evidence(record, line_ids):
+        prior = next(
+            (
+                fact
+                for fact in current
+                if fact.field_key == item.key
+                and fact.line_id == item.line_id
+                and fact.evidence_rung == item.rung
+            ),
+            None,
+        )
+        if prior is not None and prior.value == item.value:
+            continue
+        pending.append((item, prior))
+    return pending
+
+
+def _apply_ramp_evidence(
+    session: Session,
+    purchase: Purchase,
+    pending: list[tuple[_RampEvidence, Fact | None]],
+) -> None:
+    if not pending:
+        return
+    document = session.scalar(
+        select(Document).where(Document.purchase_id == purchase.id)
+    )
+    for item, prior in pending:
+        if prior is not None:
+            prior.is_current = False
+        fact = Fact(
+            id=str(uuid4()),
+            org_id=purchase.org_id,
+            purchase_id=purchase.id,
+            line_id=item.line_id,
+            field_key=item.key,
+            value=item.value,
+            origin="RAMP_RECORD",
+            source="ramp transaction",
+            evidence_rung=item.rung,
+            confirmation=item.confirmation,
+            version=purchase.facts_version,
+            is_current=True,
+            supersedes=prior.id if prior is not None else None,
+        )
+        session.add(fact)
+        session.flush()
+        # RG-6: every Ramp-record fact resolves to an evidence row.
+        session.add(
+            Evidence(
+                id=str(uuid4()),
+                fact_id=fact.id,
+                document_id=document.id if document is not None else None,
+                page=1,
+                passage=item.passage,
+                provenance="ramp_record",
+            )
+        )
+
+
 def _add_fact(
     session: Session,
     purchase: Purchase,
@@ -796,7 +980,8 @@ def _apply_cross_check(
     purchase: Purchase, lines: list[PurchaseLine], facts: list[Fact]
 ) -> None:
     line_total = sum(
-        (parse_decimal(line.line_amount) for line in lines), start=parse_decimal("0")
+        (parse_decimal(_admitted_line_amount(line, facts)) for line in lines),
+        start=parse_decimal("0"),
     )
     if purchase.ramp_entity_amount and differs_by_more_than_one_cent(
         purchase.ramp_entity_amount, f"{line_total:.2f}"
@@ -818,6 +1003,33 @@ def _apply_cross_check(
         for fact in facts:
             if fact.field_key == "tax_charged":
                 fact.confirmation = "UNCONFIRMED"
+
+
+def _admitted_line_amount(line: PurchaseLine, facts: list[Fact]) -> str:
+    """The line's current line-scoped line_amount fact, else the stored line.
+
+    A sourced correction (H5) supersedes the earlier fact, so the cross-check
+    and the engine read the corrected amount, never a stale line column.
+    """
+    for fact in facts:
+        if (
+            fact.field_key == "line_amount"
+            and fact.line_id == line.id
+            and fact.value is not None
+            and fact.value.strip()
+        ):
+            return fact.value
+    return line.line_amount
+
+
+def _confirmed_fact(views: dict[str, FactView], key: str) -> str | None:
+    """A confirmed, non-blank fact value for the engine request, else None."""
+    fact = views.get(key)
+    if fact is None or fact.confirmation != "CONFIRMED":
+        return None
+    if fact.value is None or not fact.value.strip():
+        return None
+    return fact.value
 
 
 def _first_hold(
@@ -878,7 +1090,7 @@ def _evaluate_one(
         invoice_date=date.fromisoformat(purchase.invoice_date),
         service_period_start=_optional_date(line.service_period_start),
         delivery_date=_optional_date(line.delivery_date),
-        line_amount=line.line_amount,
+        line_amount=_confirmed_fact(views, "line_amount") or line.line_amount,
         tax_charged=tax.value,
         shipping=line.shipping_amount,
         location_name=line.location_name or "",
@@ -1058,10 +1270,19 @@ def _link_exact_invoice(
     ocr_taxes: str | None,
     *,
     job: Job | None,
+    record: dict[str, Any] | None = None,
 ) -> Job:
-    """Keep both source events on one purchase and reconcile a new receipt tax."""
+    """Keep both source events on one purchase and reconcile new receipt evidence."""
     event.purchase_id = purchase.id
+    before = purchase.facts_version
     _note_ocr_evidence(session, purchase, ocr_taxes)
+    pending = _pending_ramp_evidence(session, purchase, record) if record else []
+    if pending:
+        if purchase.facts_version == before:
+            # New evidence versions the purchase and supersedes current results.
+            purchase.facts_version += 1
+            _supersede_current(session, purchase)
+        _apply_ramp_evidence(session, purchase, pending)
     _stage_audit(
         session,
         purchase.org_id,
