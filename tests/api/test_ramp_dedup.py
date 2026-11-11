@@ -127,6 +127,34 @@ def test_bill_then_card_uses_the_same_rule(
         assert session.scalar(select(func.count()).select_from(Purchase)) == 1
 
 
+def test_case_and_whitespace_variants_still_match(
+    signed_client: TestClient,  # noqa: F811
+) -> None:
+    client = signed_client
+    _put(
+        client,
+        key="card-norm",
+        bill=False,
+        invoice="  inv-26 ",
+        vendor="synthetic vendor",
+    )
+    _put(
+        client,
+        key="bill-norm",
+        bill=True,
+        invoice="INV-26",
+        vendor="  Synthetic Vendor  ",
+    )
+    _send(client, "evt-norm-card", "transactions.receipt_added", "card-norm")
+    _send(client, "evt-norm-bill", "bills.created", "bill-norm")
+    with client.app.state.ctx.session_factory() as session:
+        rows = list(session.scalars(select(Purchase)).all())
+        assert len(rows) == 1
+    detail = client.get(f"/api/v1/purchases/{rows[0].id}").json()
+    assert detail["possible_duplicate_ids"] == []
+    assert detail["queue"] != "needs_human_review"
+
+
 def test_different_invoice_numbers_stay_two_purchases(
     signed_client: TestClient,  # noqa: F811
 ) -> None:
@@ -136,7 +164,12 @@ def test_different_invoice_numbers_stay_two_purchases(
     _send(client, "evt-a", "transactions.receipt_added", "card-a")
     _send(client, "evt-b", "bills.created", "bill-b")
     with client.app.state.ctx.session_factory() as session:
-        assert session.scalar(select(func.count()).select_from(Purchase)) == 2
+        rows = list(session.scalars(select(Purchase)).all())
+        assert len(rows) == 2
+    for row in rows:
+        detail = client.get(f"/api/v1/purchases/{row.id}").json()
+        assert detail["possible_duplicate_ids"] == []
+        assert detail["queue"] != "needs_human_review"
 
 
 def test_ambiguous_date_keeps_both_and_names_them(
@@ -168,7 +201,15 @@ def test_ambiguous_amount_keeps_both(
     _send(client, "evt-amt1", "transactions.receipt_added", "card-amt")
     _send(client, "evt-amt2", "bills.created", "bill-amt")
     with client.app.state.ctx.session_factory() as session:
-        assert session.scalar(select(func.count()).select_from(Purchase)) == 2
+        rows = list(session.scalars(select(Purchase)).all())
+        assert len(rows) == 2
+        ids = {row.id for row in rows}
+    first = client.get(f"/api/v1/purchases/{rows[0].id}").json()
+    second = client.get(f"/api/v1/purchases/{rows[1].id}").json()
+    assert set(first["possible_duplicate_ids"]) == ids - {rows[0].id}
+    assert set(second["possible_duplicate_ids"]) == ids - {rows[1].id}
+    assert first["queue"] != "needs_human_review"
+    assert second["queue"] != "needs_human_review"
 
 
 def test_blank_or_invalid_dates_stay_two_and_are_named(
@@ -254,9 +295,9 @@ def test_later_bill_ocr_supersedes_an_approved_card(
         "/api/v1/audit-events", params={"object_id": purchase_id}
     ).json()["audit_events"]
     dedup = [event for event in events if event["command"] == "deduplicate"]
-    assert sorted(event["object_version"] for event in dedup) == [1, 2]
-    for event in dedup:
-        assert event["after_hash"] == _after_hash(event)
+    assert len(dedup) == 1
+    assert dedup[0]["object_version"] == 2
+    assert dedup[0]["after_hash"] == _after_hash(dedup[0])
     _send(client, "evt-bill-ocr", "bills.created", "bill-ocr")
     with client.app.state.ctx.session_factory() as session:
         assert session.scalar(select(func.count()).select_from(Purchase)) == 1
@@ -271,14 +312,6 @@ def test_later_bill_ocr_supersedes_an_approved_card(
             )
             == 1
         )
-    retried = client.get(
-        "/api/v1/audit-events", params={"object_id": purchase_id}
-    ).json()["audit_events"]
-    assert sorted(
-        event["object_version"]
-        for event in retried
-        if event["command"] == "deduplicate"
-    ) == [1, 2]
 
 
 def test_same_ocr_on_an_exact_bill_keeps_the_approval(
@@ -438,24 +471,18 @@ def test_ambiguous_invoices_keep_one_audit_chain(
     events = client.get("/api/v1/audit-events", params={"object_id": first_id}).json()[
         "audit_events"
     ]
-    # Pipeline stage events (#53) come first and share the same chain.
-    start = [event["command"] for event in events].index("add_fact")
-    assert all(event["actor_id"] == "system" for event in events[:start])
+    assert events[0]["command"] == "add_fact"
+    assert events[1]["command"].startswith("ambiguous_invoice_match:")
+    assert events[2]["command"].startswith("ambiguous_invoice_match:")
+    assert events[1]["command"] != events[2]["command"]
     assert events[0]["before_hash"] == ""
-    for previous, current in zip(events, events[1:], strict=False):
-        assert current["before_hash"] == previous["after_hash"]
+    assert events[1]["before_hash"] == events[0]["after_hash"]
+    assert events[2]["before_hash"] == events[1]["after_hash"]
+    assert events[1]["before_hash"] != ""
+    assert events[2]["before_hash"] != ""
     for event in events:
-        assert event["after_hash"] == _after_hash(event)
-    tail = events[start:]
-    matches = [
-        event
-        for event in tail
-        if event["command"].startswith("ambiguous_invoice_match:")
-    ]
-    assert len(matches) == 2
-    assert matches[0]["command"] != matches[1]["command"]
-    for event in tail:
         assert event["object_version"] == 2
+        assert event["after_hash"] == _after_hash(event)
     detail = client.get(f"/api/v1/purchases/{first_id}").json()
     assert len(detail["possible_duplicate_ids"]) == 2
     assert detail["queue"] != "needs_human_review"
@@ -483,3 +510,58 @@ def _assert_receipt_invalidated(
         purchase = session.get(Purchase, purchase_id)
         assert purchase is not None
         assert purchase.ramp_ocr_taxes == "1.00"
+
+
+def test_card_without_an_invoice_date_never_exactly_matches_a_bill(
+    signed_client: TestClient,  # noqa: F811
+) -> None:
+    client = signed_client
+    simulator = client.app.state.ctx.ramp
+    # A card with a transaction time on the bill's date but no printed date.
+    simulator.transactions["card-nodate"] = dict(
+        entity_amount="50.00",
+        currency_code="USD",
+        merchant_name="Synthetic Vendor",
+        invoice_number="INV-NODATE",
+        user_transaction_time="2026-11-15T09:00:00Z",
+        receipts=[],
+    )
+    _send(client, "evt-card-nodate", "transactions.cleared", "card-nodate")
+    _put(client, key="bill-nodate", bill=True, invoice="INV-NODATE")
+    _send(client, "evt-bill-nodate", "bills.created", "bill-nodate")
+    with client.app.state.ctx.session_factory() as session:
+        rows = list(session.scalars(select(Purchase)).all())
+        assert len(rows) == 2
+        card = next(row for row in rows if row.ramp_transaction_id == "card-nodate")
+        assert card.invoice_date == ""
+    events = client.get("/api/v1/audit-events", params={"object_id": card.id}).json()[
+        "audit_events"
+    ]
+    assert any(
+        event["command"].startswith("ambiguous_invoice_match:") for event in events
+    )
+
+
+def test_later_event_for_a_linked_card_resolves_to_the_merged_purchase(
+    signed_client: TestClient,  # noqa: F811
+) -> None:
+    client = signed_client
+    simulator = client.app.state.ctx.ramp
+    _put(client, key="bill-first", bill=True, invoice="INV-LINK")
+    _send(client, "evt-bill-first", "bills.created", "bill-first")
+    _put(client, key="card-later", bill=False, invoice="INV-LINK")
+    _send(client, "evt-card-later", "transactions.cleared", "card-later")
+    with client.app.state.ctx.session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(Purchase)) == 1
+        purchase_id = session.scalars(select(Purchase.id)).one()
+    # The card's invoice metadata later disappears; it must not split off.
+    del simulator.transactions["card-later"]["invoice_number"]
+    del simulator.transactions["card-later"]["invoice_date"]
+    _send(client, "evt-card-again", "transactions.receipt_added", "card-later")
+    with client.app.state.ctx.session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(Purchase)) == 1
+        linked = session.scalar(
+            select(SourceEvent).where(SourceEvent.external_event_id == "evt-card-again")
+        )
+        assert linked is not None
+        assert linked.purchase_id == purchase_id

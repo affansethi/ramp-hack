@@ -252,12 +252,7 @@ def ingest_fetched_record(
     transaction_id = inputs["object_id"]
     if inputs["event_type"] == "bills.created":
         transaction_id = "bill:" + transaction_id
-    existing = session.scalar(
-        select(Purchase).where(
-            Purchase.org_id == job.org_id,
-            Purchase.ramp_transaction_id == transaction_id,
-        )
-    )
+    existing = _purchase_for_ramp_object(session, job, transaction_id)
     if existing is not None:
         # Amount and OCR feed the cross-check. A new value versions the purchase,
         # supersedes the current result, and queues that check again.
@@ -329,6 +324,45 @@ def ingest_fetched_record(
     if result.purchase_id is not None:
         for other in ambiguous:
             _record_ambiguous(session, job.org_id, result.purchase_id, other.id)
+
+
+def _purchase_for_ramp_object(
+    session: Session, job: Job, transaction_id: str
+) -> Purchase | None:
+    """The canonical purchase for a Ramp card or bill, including a linked one.
+
+    A merged purchase keeps one ramp_transaction_id, but every fetch job that
+    resolved to it records its purchase_id, so a later event for the other
+    linked object resolves here instead of creating a second purchase.
+    """
+    direct = session.scalar(
+        select(Purchase).where(
+            Purchase.org_id == job.org_id,
+            Purchase.ramp_transaction_id == transaction_id,
+        )
+    )
+    if direct is not None:
+        return direct
+    prior = session.scalars(
+        select(Job)
+        .where(
+            Job.org_id == job.org_id,
+            Job.kind == "fetch",
+            Job.id != job.id,
+            Job.purchase_id.is_not(None),
+        )
+        .order_by(Job.created_at)
+    ).all()
+    for row in prior:
+        inputs = json.loads(row.input_payload or "{}")
+        object_id = inputs.get("object_id")
+        if not object_id:
+            continue
+        if inputs.get("event_type") == "bills.created":
+            object_id = "bill:" + object_id
+        if object_id == transaction_id and row.purchase_id is not None:
+            return session.get(Purchase, row.purchase_id)
+    return None
 
 
 def _refresh_fetched_inputs(
@@ -566,6 +600,9 @@ def _write_facts(
         header["delivery_method"] = "electronic"
         header["access_model"] = "remote"
     for key, value in header.items():
+        if not value:
+            # Missing is not an empty string: no fact, so the hold check names it.
+            continue
         _add_fact(
             session,
             purchase,

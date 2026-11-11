@@ -79,11 +79,16 @@ def test_fetch_only_in_worker(
         purchase = session.scalar(select(Purchase))
         assert purchase.ramp_entity_amount == "123.450"
         assert purchase.ramp_ocr_taxes == "7.250"
+        # The record has a transaction time but no printed invoice date, so the
+        # invoice date stays missing (and no invoice_date fact is admitted).
         assert (purchase.vendor, purchase.invoice_number, purchase.invoice_date) == (
             "Synthetic Vendor",
             "SYN-25",
-            "2026-11-15",
+            "",
         )
+        assert not session.scalars(
+            select(Fact).where(Fact.field_key == "invoice_date")
+        ).all()
         assert purchase.category is None
         assert not session.scalars(
             select(Fact).where(
@@ -140,9 +145,21 @@ def test_transaction_events_share_purchase(
 ):
     _record(signed_client)
     ctx = signed_client.app.state.ctx
+    ctx.ramp.transactions["synthetic-id"]["receipts"] = [
+        "receipt-25",
+        "second-receipt",
+        "receipt-25",
+    ]
+    ctx.ramp.receipts["receipt-25"]["ocr"]["taxes"] = [{"tax_amount": "2.00"}]
+    ctx.ramp.receipts["second-receipt"] = {"ocr": {"taxes": [{"tax_amount": "3.00"}]}}
     for index, kind in enumerate(kinds):
-        _send(signed_client, f"evt-{index}", kind, "synthetic-id")
+        data = (
+            {"receipt_id": "second-receipt"} if kind.endswith("receipt_added") else {}
+        )
+        _send(signed_client, f"evt-{index}", kind, "synthetic-id", **data)
         assert poll_once(ctx) == 1
+        with ctx.session_factory() as session:
+            assert session.scalar(select(Purchase)).ramp_ocr_taxes == "5.00"
         # Same record: no second advance. A changed record queues one recheck.
         assert poll_once(ctx) == (0 if index else 1)
     with ctx.session_factory() as session:
@@ -178,6 +195,7 @@ def test_receipt_id_preserves_absent_tax_versus_zero(
 ):
     _record(signed_client)
     ctx = signed_client.app.state.ctx
+    ctx.ramp.transactions["synthetic-id"]["receipts"] = []
     ctx.ramp.receipts["explicit-receipt"] = {
         "ocr": {"taxes": [] if tax is None else [{"tax_amount": tax}]}
     }
