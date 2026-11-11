@@ -1,155 +1,98 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, expect, test, vi } from "vitest";
 import App from "./App.jsx";
+import { mockApi } from "./test/mockApi.js";
+import { baseRoutes, EMPTY_TOTALS, META, PURCHASES, TOTALS } from "./test/fixtures.js";
 
-const PURCHASES = {
-  llm_mode: "replay",
-  replay: true,
-  purchases: [
-    {
-      id: "ready-1",
-      vendor: "Synthetic SaaS",
-      invoice_number: "SYN-1",
-      invoice_date: "2026-11-15",
-      item_status: "DETERMINED",
-      queue: "ready",
-      scenario: "case1",
-      extraction_mode: "replay",
-      facts_version: 1,
-      stop_reason: "Engine-supported result waiting for a named reviewer.",
-    },
-    {
-      id: "nhr-1",
-      vendor: "Synthetic Hardware",
-      invoice_number: "SYN-4",
-      invoice_date: "2026-12-15",
-      item_status: "DETERMINED",
-      queue: "needs_human_review",
-      scenario: "case4",
-      extraction_mode: "replay",
-      facts_version: 1,
-      stop_reason: "Needs human review (RULE_TRANSITION_UNRESOLVED). No tax amount.",
-    },
-    {
-      id: "held-1",
-      vendor: "Synthetic Seats",
-      invoice_number: "SYN-6",
-      invoice_date: "2026-11-15",
-      item_status: "DETERMINED",
-      queue: "held",
-      scenario: "case6",
-      extraction_mode: "replay",
-      facts_version: 1,
-      stop_reason: "Held for user_location. No engine call and no tax amount.",
-    },
-    {
-      id: "error-1",
-      vendor: "Synthetic Broken",
-      invoice_number: "SYN-9",
-      invoice_date: "2026-11-15",
-      item_status: "DETERMINED",
-      queue: "error",
-      scenario: "case9",
-      extraction_mode: "replay",
-      facts_version: 1,
-      stop_reason: "Determination error (MALFORMED). No tax amount.",
-    },
-  ],
-  next_cursor: null,
-};
-
-const TOTALS = {
-  llm_mode: "replay",
-  replay: true,
-  approved_liabilities: {
-    by_jurisdiction: [],
-    message: "No approved liabilities",
-  },
-  refund_candidates: {
-    label: "not recovered cash",
-    count: 0,
-    total: null,
-    rows: [],
-  },
-  held: {
-    count: 1,
-    label: "purchase amount, not tax",
-    purchase_amount: { value: "120.00", currency: "USD" },
-  },
-  open_needs_human_review: { count: 1 },
-  determination_errors: { count: 1 },
-  unreviewed: { by_direction: [] },
-};
-
-const HELD_DETAIL = {
-  llm_mode: "replay",
-  replay: true,
-  id: "held-1",
-  vendor: "Synthetic Seats",
-  queue: "held",
-  purchase_amount: { value: "120.00", currency: "USD" },
-  purchase_amount_note: "purchase amount, not tax",
-  holds: [{ id: "hold-1", reason: "MISSING", named_fact: "user_location", active: true }],
-  questions: [
-    {
-      id: "q-1",
-      fact_key: "user_location",
-      recipient: "spend owner",
-      state: "OPEN",
-      asked_at: "2026-11-10T00:00:00Z",
-    },
-  ],
-  determinations: [],
-};
-
-function mockFetch() {
-  return vi.fn(async (url, options = {}) => {
-    const ok = (body) => ({ ok: true, status: 200, json: async () => body });
-    if (url === "/api/v1/demo/login" && options.method === "POST") {
-      return ok({ csrf_token: "token" });
-    }
-    if (url === "/api/v1/purchases") return ok(PURCHASES);
-    if (url === "/api/v1/totals") return ok(TOTALS);
-    if (url === "/api/v1/purchases/held-1") return ok(HELD_DETAIL);
-    throw new Error(`unexpected fetch: ${url}`);
-  });
-}
+const BANNER = "Synthetic data • simulated filing";
 
 beforeEach(() => {
-  vi.stubGlobal("fetch", mockFetch());
   vi.useFakeTimers({ shouldAdvanceTime: true });
 });
 
-test("banner, three queue headings, and held row", async () => {
+function section(name) {
+  return screen.getByRole("heading", { name, level: 2 }).closest("section");
+}
+
+test("the banner renders with the synthetic and replay labels", async () => {
+  mockApi(baseRoutes());
   render(<App />);
-
-  expect(await screen.findByText("Synthetic data • simulated filing")).toBeTruthy();
-  expect(await screen.findByText("Synthetic demo data")).toBeTruthy();
+  expect(await screen.findByText(BANNER)).toBeTruthy();
+  expect(screen.getByText("Synthetic demo data")).toBeTruthy();
   expect(await screen.findByText("Recorded extraction: replay")).toBeTruthy();
+});
 
-  expect(await screen.findByText("Approved liabilities")).toBeTruthy();
-  expect(await screen.findByText("No approved liabilities")).toBeTruthy();
-  expect(await screen.findByText("not recovered cash")).toBeTruthy();
+test("the banner stays up when the API fails", async () => {
+  mockApi({
+    "GET /api/v1/purchases": () => {
+      throw new Error("offline");
+    },
+    "GET /api/v1/totals": TOTALS,
+  });
+  render(<App />);
+  expect(await screen.findByRole("alert")).toBeTruthy();
+  expect(screen.getByText(BANNER)).toBeTruthy();
+});
 
-  expect(screen.getByRole("heading", { name: "Ready for review" })).toBeTruthy();
-  expect(screen.getByRole("heading", { name: "Needs human review" })).toBeTruthy();
-  expect(
-    screen.getByRole("heading", { name: "Held", level: 2 }),
-  ).toBeTruthy();
-  expect(screen.getByRole("heading", { name: "Errors" })).toBeTruthy();
+test("the three queues render as separate lists", async () => {
+  mockApi(baseRoutes());
+  render(<App />);
+  await screen.findByText("SYN-1", { exact: false });
+  expect(within(section("Ready for review")).getByText(/SYN-1\b/)).toBeTruthy();
+  expect(within(section("Ready for review")).queryByText(/SYN-4|SYN-6/)).toBeNull();
+  expect(within(section("Needs human review")).getByText(/SYN-4/)).toBeTruthy();
+  expect(within(section("Needs human review")).queryByText(/SYN-1\b|SYN-6/)).toBeNull();
+  expect(within(section("Held")).getByText(/SYN-6/)).toBeTruthy();
+  expect(within(section("Held")).queryByText(/SYN-1\b|SYN-4/)).toBeNull();
+});
 
-  expect(await screen.findByText(/Asked: spend owner/)).toBeTruthy();
-  expect(await screen.findByText(/2026-11-10T00:00:00Z/)).toBeTruthy();
-  expect(await screen.findByText(/Reply status: OPEN/)).toBeTruthy();
-  expect((await screen.findAllByText(/120\.00 USD/)).length).toBeGreaterThan(0);
-  expect(
-    (await screen.findAllByText(/purchase amount, not tax/)).length,
-  ).toBeGreaterThan(0);
-  expect(
-    await screen.findByText("Missing fact: user_location"),
-  ).toBeTruthy();
+test("the figures render side by side with no combined figure", async () => {
+  mockApi(baseRoutes());
+  render(<App />);
+  const figures = await screen.findByRole("region", { name: "Figures" });
+  await within(figures).findByText(/151\.92 USD/);
+  const headings = within(figures)
+    .getAllByRole("heading", { level: 3 })
+    .map((node) => node.textContent);
+  expect(headings).toEqual(["Approved liabilities", "not recovered cash", "Held"]);
+  expect(within(figures).getByText(/151\.92 USD/)).toBeTruthy();
+  expect(within(figures).getAllByText(/83\.00 USD/).length).toBeGreaterThan(0);
+  expect(within(figures).getByText(/120\.00 USD/)).toBeTruthy();
+  // No figure combines the three: 151.92, 83.00 and 120.00 appear only as copied.
+  expect(figures.textContent).not.toMatch(/combined|234\.92|68\.92|354\.92/i);
+});
 
+test("no approved liabilities shows the API message, never a bare zero", async () => {
+  mockApi(baseRoutes({ "GET /api/v1/totals": EMPTY_TOTALS }));
+  render(<App />);
+  const figures = await screen.findByRole("region", { name: "Figures" });
+  expect(await within(figures).findByText("No approved liabilities")).toBeTruthy();
+  expect(figures.textContent).not.toMatch(/(^|[^\d.])0\.00/);
+});
+
+test("a held row shows the purchase amount, not tax, and no tax figure", async () => {
+  mockApi(baseRoutes());
+  render(<App />);
+  const held = section("Held");
+  expect(await within(held).findByText(/120\.00 USD/)).toBeTruthy();
+  expect(within(held).getAllByText(/purchase amount, not tax/).length).toBeGreaterThan(0);
+  expect(within(held).getByText("Missing fact: user_location")).toBeTruthy();
+  expect(await within(held).findByText(/Asked: spend owner/)).toBeTruthy();
+  expect(within(held).getByText(/Reply status: OPEN/)).toBeTruthy();
+  expect(held.textContent).not.toMatch(/(^|[^\d.])0\.00/);
+  expect(held.textContent).not.toMatch(/engine|expected tax|tax amount:/i);
+});
+
+test("replay extraction is labeled replay and never live", async () => {
+  mockApi(
+    baseRoutes({
+      "GET /api/v1/purchases": { ...PURCHASES, llm_mode: "replay", replay: true },
+      "GET /api/v1/totals": { ...TOTALS, ...META },
+    }),
+  );
+  render(<App />);
+  expect(await screen.findByText("Recorded extraction: replay")).toBeTruthy();
   await waitFor(() => {
-    expect(screen.queryByText(/live/i)).toBeNull();
+    expect(document.body.textContent).not.toMatch(/\blive\b/i);
   });
 });
