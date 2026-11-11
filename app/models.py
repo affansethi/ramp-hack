@@ -15,6 +15,17 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db import Base
 
 
+def _fk(target: str) -> ForeignKey:
+    """Foreign keys are checked at commit, not per statement.
+
+    The models declare no ORM relationships, so the unit of work does not
+    order inserts by dependency. Deferred checks keep integrity enforced
+    (Postgres and SQLite with foreign_keys=ON) without depending on flush
+    order inside one transaction.
+    """
+    return ForeignKey(target, deferrable=True, initially="DEFERRED")
+
+
 class Organization(Base):
     __tablename__ = "organizations"
 
@@ -26,7 +37,7 @@ class Person(Base):
     __tablename__ = "persons"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    org_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    org_id: Mapped[str] = mapped_column(_fk("organizations.id"), index=True)
     name: Mapped[str] = mapped_column(String(200))
     role: Mapped[str] = mapped_column(String(32))
 
@@ -35,7 +46,7 @@ class SetupRow(Base):
     __tablename__ = "setup"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    org_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    org_id: Mapped[str] = mapped_column(_fk("organizations.id"), index=True)
     jurisdictions: Mapped[str] = mapped_column(String(32))
     period_start: Mapped[str] = mapped_column(String(10))
     period_end: Mapped[str] = mapped_column(String(10))
@@ -46,8 +57,8 @@ class DemoSession(Base):
     __tablename__ = "sessions"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    person_id: Mapped[str] = mapped_column(ForeignKey("persons.id"))
-    org_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"))
+    person_id: Mapped[str] = mapped_column(_fk("persons.id"))
+    org_id: Mapped[str] = mapped_column(_fk("organizations.id"))
     created_at: Mapped[str] = mapped_column(String(32))
     csrf_token: Mapped[str | None] = mapped_column(String(128), unique=True)
 
@@ -137,7 +148,7 @@ class PurchaseLine(Base):
     __tablename__ = "purchase_lines"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    purchase_id: Mapped[str] = mapped_column(ForeignKey("purchases.id"), index=True)
+    purchase_id: Mapped[str] = mapped_column(_fk("purchases.id"), index=True)
     line_number: Mapped[int] = mapped_column(Integer)
     description: Mapped[str] = mapped_column(String(400))
     quantity: Mapped[str] = mapped_column(String(32))
@@ -157,7 +168,7 @@ class Document(Base):
     # Null until a purchase exists: an import stores bytes first (#27) and
     # #49 links the purchase later through the import job.
     purchase_id: Mapped[str | None] = mapped_column(
-        ForeignKey("purchases.id"), nullable=True, index=True
+        _fk("purchases.id"), nullable=True, index=True
     )
     blob_key: Mapped[str | None] = mapped_column(String(400), nullable=True)
     sha256: Mapped[str] = mapped_column(String(64))
@@ -170,7 +181,7 @@ class Fact(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     org_id: Mapped[str] = mapped_column(String(36), index=True)
-    purchase_id: Mapped[str] = mapped_column(ForeignKey("purchases.id"), index=True)
+    purchase_id: Mapped[str] = mapped_column(_fk("purchases.id"), index=True)
     line_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     field_key: Mapped[str] = mapped_column(String(80))
     value: Mapped[str | None] = mapped_column(String(400), nullable=True)
@@ -187,7 +198,7 @@ class Evidence(Base):
     __tablename__ = "evidence"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    fact_id: Mapped[str] = mapped_column(ForeignKey("facts.id"), index=True)
+    fact_id: Mapped[str] = mapped_column(_fk("facts.id"), index=True)
     document_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     page: Mapped[int] = mapped_column(Integer)
     passage: Mapped[str] = mapped_column(Text)
@@ -198,7 +209,7 @@ class Hold(Base):
     __tablename__ = "holds"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    purchase_id: Mapped[str] = mapped_column(ForeignKey("purchases.id"), index=True)
+    purchase_id: Mapped[str] = mapped_column(_fk("purchases.id"), index=True)
     reason: Mapped[str] = mapped_column(String(40))
     named_fact: Mapped[str] = mapped_column(String(80))
     active: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -209,7 +220,7 @@ class Question(Base):
     __tablename__ = "questions"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    hold_id: Mapped[str] = mapped_column(ForeignKey("holds.id"), index=True)
+    hold_id: Mapped[str] = mapped_column(_fk("holds.id"), index=True)
     purchase_id: Mapped[str] = mapped_column(String(36), index=True)
     fact_key: Mapped[str] = mapped_column(String(80))
     recipient: Mapped[str] = mapped_column(String(200))
@@ -233,7 +244,7 @@ class Determination(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     org_id: Mapped[str] = mapped_column(String(36), index=True)
-    purchase_id: Mapped[str] = mapped_column(ForeignKey("purchases.id"), index=True)
+    purchase_id: Mapped[str] = mapped_column(_fk("purchases.id"), index=True)
     line_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     jurisdiction: Mapped[str] = mapped_column(String(8))
     facts_version: Mapped[int] = mapped_column(Integer)
@@ -260,9 +271,7 @@ class ReviewDecision(Base):
     __tablename__ = "review_decisions"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    determination_id: Mapped[str] = mapped_column(
-        ForeignKey("determinations.id"), index=True
-    )
+    determination_id: Mapped[str] = mapped_column(_fk("determinations.id"), index=True)
     version: Mapped[int] = mapped_column(Integer)
     action: Mapped[str] = mapped_column(String(32))
     approval_path: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -275,9 +284,7 @@ class LiabilityLine(Base):
     __tablename__ = "liability_lines"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    determination_id: Mapped[str] = mapped_column(
-        ForeignKey("determinations.id"), index=True
-    )
+    determination_id: Mapped[str] = mapped_column(_fk("determinations.id"), index=True)
     purchase_id: Mapped[str] = mapped_column(String(36), index=True)
     jurisdiction: Mapped[str] = mapped_column(String(8))
     period: Mapped[str] = mapped_column(String(16))
@@ -290,9 +297,7 @@ class RefundCandidate(Base):
     __tablename__ = "refund_candidates"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    determination_id: Mapped[str] = mapped_column(
-        ForeignKey("determinations.id"), index=True
-    )
+    determination_id: Mapped[str] = mapped_column(_fk("determinations.id"), index=True)
     purchase_id: Mapped[str] = mapped_column(String(36), index=True)
     amount: Mapped[str] = mapped_column(String(32))
     status: Mapped[str] = mapped_column(String(40))
@@ -304,9 +309,7 @@ class JournalEntryDraft(Base):
     __tablename__ = "journal_entry_drafts"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    determination_id: Mapped[str] = mapped_column(
-        ForeignKey("determinations.id"), index=True
-    )
+    determination_id: Mapped[str] = mapped_column(_fk("determinations.id"), index=True)
     purchase_id: Mapped[str] = mapped_column(String(36))
     debit_account: Mapped[str] = mapped_column(String(80))
     credit_account: Mapped[str] = mapped_column(String(80))
@@ -318,9 +321,7 @@ class RefundLetterDraft(Base):
     __tablename__ = "refund_letter_drafts"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    determination_id: Mapped[str] = mapped_column(
-        ForeignKey("determinations.id"), index=True
-    )
+    determination_id: Mapped[str] = mapped_column(_fk("determinations.id"), index=True)
     purchase_id: Mapped[str] = mapped_column(String(36))
     vendor: Mapped[str] = mapped_column(String(200))
     invoice_number: Mapped[str] = mapped_column(String(80))
@@ -360,8 +361,8 @@ class WorkpaperLine(Base):
     __tablename__ = "workpaper_lines"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    workpaper_id: Mapped[str] = mapped_column(ForeignKey("workpapers.id"), index=True)
-    liability_line_id: Mapped[str] = mapped_column(ForeignKey("liability_lines.id"))
+    workpaper_id: Mapped[str] = mapped_column(_fk("workpapers.id"), index=True)
+    liability_line_id: Mapped[str] = mapped_column(_fk("liability_lines.id"))
 
 
 class Job(Base):
