@@ -28,6 +28,7 @@ from app.models import (
     Hold,
     JournalEntryDraft,
     LiabilityLine,
+    Person,
     Purchase,
     PurchaseLine,
     RefundCandidate,
@@ -177,6 +178,17 @@ def add_human_fact(
     return purchase
 
 
+def _require_named_reviewer(session: Session, org_id: str, actor_id: str) -> None:
+    person = session.get(Person, actor_id)
+    if (
+        person is None
+        or person.org_id != org_id
+        or not person.name.strip()
+        or person.role != "reviewer"
+    ):
+        raise DomainError("FORBIDDEN", "A named reviewer is required to decide.", 403)
+
+
 def review_determination(
     session: Session,
     *,
@@ -189,6 +201,7 @@ def review_determination(
     expected_version: int,
     rules_dir: str = "rules",
 ) -> Determination:
+    _require_named_reviewer(session, org_id, actor_id)
     determination = _determination(session, org_id, determination_id)
     if determination.version != expected_version or not determination.is_current:
         raise DomainError(
@@ -251,9 +264,15 @@ def refer_determination(
     determination_id: str,
     action: str,
     note: str,
+    expected_version: int,
 ) -> Determination:
+    _require_named_reviewer(session, org_id, actor_id)
     determination = _determination(session, org_id, determination_id)
-    if not determination.is_current or determination.label != "NEEDS_HUMAN_REVIEW":
+    if determination.version != expected_version or not determination.is_current:
+        raise DomainError(
+            "STALE_VERSION", "This result changed. Reload it and try again.", 409
+        )
+    if determination.label != "NEEDS_HUMAN_REVIEW":
         raise DomainError(
             "NEEDS_HUMAN_REVIEW_NOT_APPROVABLE",
             "Refer is only for a current needs-human-review result.",

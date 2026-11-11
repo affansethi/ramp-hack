@@ -299,7 +299,10 @@ def test_concurrent_first_referrals_chain_through_commit(
         def refer(index: int) -> int:
             response = client.post(
                 f"/api/v1/determinations/{determination['id']}/refer",
-                json={"action": "leave_open"},
+                json={
+                    "action": "leave_open",
+                    "expected_version": determination["version"],
+                },
                 headers=_headers(f"concurrent-refer-{index}"),
             )
             assert response.status_code == 200, response.text
