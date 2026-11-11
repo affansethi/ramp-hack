@@ -1,7 +1,14 @@
-"""SQLite locally, Postgres when DATABASE_URL says so. Money stays text."""
+"""SQLite locally, Postgres when DATABASE_URL says so. Money stays text.
+
+Postgres URLs use the psycopg v3 driver: ``postgresql://`` is normalized to
+``postgresql+psycopg://``. Non-local Postgres hosts must carry
+``sslmode=require`` (hosted Postgres requires TLS); local hosts
+(localhost, 127.0.0.1, ::1, or an empty host for a Unix socket) are exempt.
+"""
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from urllib.parse import parse_qsl, urlparse
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
@@ -12,11 +19,44 @@ class Base(DeclarativeBase):
     pass
 
 
+_POSTGRES_SCHEMES = ("postgresql", "postgresql+psycopg")
+_LOCAL_POSTGRES_HOSTS = frozenset({"", "localhost", "127.0.0.1", "::1"})
+
+
+def normalize_database_url(url: str) -> str:
+    """Map ``postgresql://`` to the psycopg v3 driver scheme.
+
+    ``postgresql+psycopg://`` and SQLite URLs pass through unchanged.
+    """
+    if url.startswith("postgresql://"):
+        return "postgresql+psycopg://" + url.removeprefix("postgresql://")
+    return url
+
+
+def _require_postgres_tls(url: str) -> None:
+    """Refuse non-local Postgres URLs without ``sslmode=require``."""
+    parsed = urlparse(url)
+    if parsed.scheme not in _POSTGRES_SCHEMES:
+        return
+    if (parsed.hostname or "") in _LOCAL_POSTGRES_HOSTS:
+        return
+    params = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    if params.get("sslmode") != "require":
+        raise ValueError(
+            "Refusing non-local Postgres DATABASE_URL without sslmode=require "
+            f"(host {parsed.hostname!r}); hosted Postgres requires TLS."
+        )
+
+
 def make_engine(url: str) -> Engine:
+    normalized = normalize_database_url(url)
+    _require_postgres_tls(normalized)
     connect_args = (
-        {"check_same_thread": False, "timeout": 30} if url.startswith("sqlite") else {}
+        {"check_same_thread": False, "timeout": 30}
+        if normalized.startswith("sqlite")
+        else {}
     )
-    return create_engine(url, connect_args=connect_args)
+    return create_engine(normalized, connect_args=connect_args)
 
 
 def make_session_factory(engine: Engine) -> sessionmaker[Session]:
