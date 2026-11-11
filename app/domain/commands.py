@@ -32,6 +32,7 @@ from app.models import (
     Person,
     Purchase,
     PurchaseLine,
+    Question,
     RefundCandidate,
     RefundLetterDraft,
     ReviewDecision,
@@ -189,6 +190,75 @@ def _require_named_reviewer(session: Session, org_id: str, actor_id: str) -> Non
         or person.role != "reviewer"
     ):
         raise DomainError("FORBIDDEN", "A named reviewer is required to decide.", 403)
+
+
+_NO_ANSWER = frozenset(
+    {"i don't know", "i dont know", "don't know", "dont know", "unknown"}
+)
+
+
+def answer_question(
+    session: Session,
+    *,
+    org_id: str,
+    actor_id: str,
+    question_id: str,
+    answer: str,
+    evidence_reference: str | None,
+    redirect_to: str | None,
+    expected_version: int,
+) -> Purchase:
+    """Record a spend owner's answer (spec §7 POST /questions/{id}/answers).
+
+    Only a sourced answer becomes a fact (through add_human_fact, which
+    supersedes results and queues the full re-check). "I don't know", a
+    redirect, or an answer with no evidence reference keeps the hold.
+    """
+    question = session.get(Question, question_id)
+    purchase = session.get(Purchase, question.purchase_id) if question else None
+    if question is None or purchase is None or purchase.org_id != org_id:
+        raise DomainError("NOT_FOUND", "Question not found.", 404)
+    if question.state == "answered":
+        raise DomainError("ALREADY_DECIDED", "This question is already answered.", 409)
+    if purchase.facts_version != expected_version:
+        raise DomainError(
+            "STALE_VERSION", "The purchase changed. Reload it and try again.", 409
+        )
+    text_answer = answer.strip()
+    reference = (evidence_reference or "").strip()
+    question.answer = text_answer or None
+    if redirect_to and redirect_to.strip():
+        question.state = "redirected"
+        question.recipient = redirect_to.strip()[:200]
+    elif not text_answer or text_answer.casefold() in _NO_ANSWER:
+        question.state = "dont_know"
+    elif not reference:
+        question.state = "unsourced"
+    else:
+        add_human_fact(
+            session,
+            org_id=org_id,
+            actor_id=actor_id,
+            purchase_id=purchase.id,
+            field=question.fact_key,
+            value=text_answer,
+            source=reference,
+            reason=f"Answer from {question.recipient}",
+            expected_version=expected_version,
+            line_id=None,
+        )
+        question.state = "answered"
+        return purchase
+    _audit(
+        session,
+        org_id,
+        actor_id,
+        f"answer_question:{question.state}",
+        "purchase",
+        purchase.id,
+        purchase.facts_version,
+    )
+    return purchase
 
 
 def review_determination(

@@ -74,6 +74,14 @@ test("case 6 holds with no tax figure and the hold rate shows", async ({ page })
   await row.getByRole("link").click();
   await expect(page.getByText("Held: no tax figure")).toBeVisible();
   await expect(page.locator(".held")).toContainText("user_location");
+  // "I don't know" keeps the hold; a sourced answer releases it.
+  await page.getByRole("button", { name: "I don't know" }).click();
+  await expect(page.locator(".held")).toContainText("dont_know");
+  await page.getByLabel("Answer", { exact: true }).fill("Seattle, WA");
+  await page.getByLabel("Evidence reference").fill("Seat export from the SSO admin, November 2026");
+  await page.getByRole("button", { name: "Record sourced answer" }).click();
+  await expect(page.getByText("Ready for review").first()).toBeVisible({ timeout: 20_000 });
+  await expect(page.locator(".held")).toHaveCount(0);
 });
 
 test("case 3 refund stays separate with a DRAFT letter; case 4 is NHR with no amount", async ({ page }) => {
