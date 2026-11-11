@@ -36,7 +36,7 @@ from app.domain.ruleset import (
     rule_is_active,
 )
 from app.main import create_app
-from app.models import Determination
+from app.models import Determination, Purchase
 from app.worker.poller import poll_once
 from tests.api.test_flow import GOOD_ENV, ROOT, _headers, _open, _run
 
@@ -647,6 +647,14 @@ def test_h5_forbidden_fields_leave_amounts_and_correction_awaits_review(
             headers=_headers("h5-correct"),
         )
         assert posted.status_code == 200, posted.text
+        # Ramp's charge total agrees with the corrected invoice (as a later
+        # transactions.cleared fetch would record), so the one-cent cross-check
+        # admits the corrected amount instead of holding it.
+        with client.app.state.ctx.session_factory() as session:
+            purchase = session.get(Purchase, purchase_id)
+            assert purchase is not None
+            purchase.ramp_entity_amount = corrected
+            session.commit()
         pending = posted.json()
         assert isinstance(pending, dict)
         assert pending["facts_version"] == facts_version + 1
@@ -669,12 +677,11 @@ def test_h5_forbidden_fields_leave_amounts_and_correction_awaits_review(
         assert current["unit_status"] == "READY_FOR_REVIEW"
         assert current["label"] == "ENGINE_SUPPORTED"
         _assert_cited_rule_and_rate(ruleset, later)
-        # The engine still reads the purchase line amount; carrying a corrected
-        # line_amount fact into the engine request is a pipeline change that is
-        # out of scope for this tests-only gate (see the H5 follow-up).
-        assert current["engine_request"]["line_amount"] == original_base
+        # H5: the sourced correction feeds the engine request (not the old line).
+        assert current["engine_request"]["line_amount"] == corrected
+        assert corrected != original_base
         new_amount = _money(current, "engine_amount")
-        assert new_amount == prior_amount
+        assert new_amount != prior_amount
         amounts = [
             fact["value"]
             for fact in later["facts"]
@@ -691,7 +698,7 @@ def test_h5_forbidden_fields_leave_amounts_and_correction_awaits_review(
         assert stored_new.unit_status == "READY_FOR_REVIEW"
         assert stored_new.engine_amount == new_amount
         assert stored_new.engine_request is not None
-        assert json.loads(stored_new.engine_request)["line_amount"] == original_base
+        assert json.loads(stored_new.engine_request)["line_amount"] == corrected
         after_totals = _totals(client, "h5-after-worker")
         _assert_excluded(after_totals, prior_amount, new_amount)
         assert _unreviewed(after_totals) == 1
