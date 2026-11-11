@@ -20,6 +20,7 @@ function useRoute() {
 export function Banner({ session }) {
   return (
     <header className="banner" role="banner">
+      <span className="banner-dot" aria-hidden="true" />
       <strong>Synthetic demo data</strong>
       <span>Synthetic data • simulated filing</span>
       {session?.llm_mode ? (
@@ -82,7 +83,11 @@ export function Simulate({ onChange }) {
   }
 
   return (
-    <section className="simulate" aria-label="Simulate">
+    <section className="simulate card" aria-label="Simulate">
+      <div className="simulate-title">
+        <strong>Simulate a Ramp event</strong>
+        <span className="sub">Sends a synthetic card swipe through the pipeline</span>
+      </div>
       <label>
         Scenario{" "}
         <select value={scenario} onChange={(e) => setScenario(e.target.value)}>
@@ -100,7 +105,7 @@ export function Simulate({ onChange }) {
         Reset demo
       </button>
       {job ? (
-        <span className="job" aria-live="polite">
+        <span className={`job job-${(job.status || "").toLowerCase()}`} aria-live="polite">
           Job {job.stage || ""}: {job.status}
           {job.error_code ? ` (${job.error_code})` : ""}
         </span>
@@ -128,6 +133,13 @@ export default function App() {
   return (
     <div className="app">
       <Banner session={session} />
+      <div className="brand">
+        <span className="brand-mark" aria-hidden="true">TL</span>
+        <div>
+          <div className="brand-name">Tax Leak</div>
+          <div className="sub">Purchase-side sales and use tax review</div>
+        </div>
+      </div>
       <nav className="tabs">
         <a href="#/queue" className={view === "queue" ? "active" : ""}>Review queue</a>
         <a href="#/totals" className={view === "totals" ? "active" : ""}>Totals and drafts</a>
