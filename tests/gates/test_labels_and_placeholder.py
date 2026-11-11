@@ -36,7 +36,7 @@ from app.domain.ruleset import (
     rule_is_active,
 )
 from app.main import create_app
-from app.models import Determination
+from app.models import Determination, Job
 from app.worker.poller import poll_once
 from tests.api.test_flow import GOOD_ENV, ROOT, _headers, _open
 
@@ -174,6 +174,15 @@ def _scenario(client: TestClient, scenario: str, key: str) -> dict[str, object]:
     body = response.json()
     assert isinstance(body, dict)
     assert poll_once(client.app.state.ctx) == 1
+    if body.get("purchase_id") is None and body.get("job_id"):
+        session = client.app.state.ctx.session_factory()
+        try:
+            job = session.get(Job, body["job_id"])
+        finally:
+            session.close()
+        if job is not None and job.purchase_id is not None:
+            body["purchase_id"] = job.purchase_id
+            assert poll_once(client.app.state.ctx) == 1
     return body
 
 

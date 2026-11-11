@@ -9,6 +9,7 @@ and requires every amount to be byte-identical.
 """
 
 import json
+import re
 from dataclasses import replace
 from pathlib import Path
 from uuid import uuid4
@@ -29,8 +30,8 @@ def _signed_rules(dest: Path) -> None:
         text = (ROOT / "rules" / name).read_text(encoding="utf-8")
         text = text.replace("review_status: candidate", "review_status: reviewed")
         text = text.replace("status: candidate", "status: signed")
-        text = text.replace("reviewed_by:", "reviewed_by: AF")
-        text = text.replace("signed_off_by:", "signed_off_by: AF")
+        text = re.sub(r"^(\s*reviewed_by:)\s*$", r"\1 AF", text, flags=re.MULTILINE)
+        text = re.sub(r"^(\s*signed_off_by:)\s*$", r"\1 AF", text, flags=re.MULTILINE)
         (dest / name).write_text(text, encoding="utf-8")
 
 

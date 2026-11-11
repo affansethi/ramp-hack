@@ -17,7 +17,7 @@ from sqlalchemy import select
 
 from app.config import load_settings
 from app.main import create_app
-from app.models import Fact
+from app.models import Fact, Job
 from app.worker.poller import poll_once
 from tests.api.conftest import (
     assert_refund_candidates_stay_separate,
@@ -86,6 +86,15 @@ def _run(client: TestClient, scenario: str, key: str) -> dict[str, object]:
     assert response.status_code == 200, response.text
     body = response.json()
     assert poll_once(client.app.state.ctx) == 1 or body["duplicate"] is True
+    if body.get("purchase_id") is None and body.get("job_id"):
+        session = client.app.state.ctx.session_factory()
+        try:
+            job = session.get(Job, body["job_id"])
+        finally:
+            session.close()
+        if job is not None and job.purchase_id is not None:
+            body["purchase_id"] = job.purchase_id
+            assert poll_once(client.app.state.ctx) == 1
     return body
 
 

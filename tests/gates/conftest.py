@@ -6,6 +6,7 @@ client, CSRF reset, header, and scenario-run helpers instead of
 importing them from `tests.api.test_flow`.
 """
 
+import re
 from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
@@ -17,6 +18,7 @@ from app.api.guards import CSRF_HEADER
 from app.api.routes import COOKIE
 from app.config import load_settings
 from app.main import create_app
+from app.models import Job
 from app.worker.poller import poll_once
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -73,9 +75,19 @@ def _activate(dest: Path) -> None:
         text = (ROOT / "rules" / name).read_text(encoding="utf-8")
         text = text.replace("review_status: candidate", "review_status: reviewed")
         text = text.replace("status: candidate", "status: signed")
-        text = text.replace("reviewed_by:", "reviewed_by: AF")
-        text = text.replace("signed_off_by:", "signed_off_by: AF")
+        text = _fill_blank_reviewer(text, "reviewed_by", "AF")
+        text = _fill_blank_reviewer(text, "signed_off_by", "AF")
         (dest / name).write_text(text, encoding="utf-8")
+
+
+def _fill_blank_reviewer(text: str, field: str, value: str) -> str:
+    """Fill an empty reviewer field without rewriting an existing initial."""
+    return re.sub(
+        rf"^(\s*{re.escape(field)}:)\s*$",
+        rf"\1 {value}",
+        text,
+        flags=re.MULTILINE,
+    )
 
 
 @pytest.fixture
@@ -104,4 +116,13 @@ def _run(client: TestClient, scenario: str, key: str) -> dict[str, object]:
     assert response.status_code == 200, response.text
     body = response.json()
     assert poll_once(client.app.state.ctx) == 1 or body["duplicate"] is True
+    if body.get("purchase_id") is None and body.get("job_id"):
+        session = client.app.state.ctx.session_factory()
+        try:
+            job = session.get(Job, body["job_id"])
+        finally:
+            session.close()
+        if job is not None and job.purchase_id is not None:
+            body["purchase_id"] = job.purchase_id
+            assert poll_once(client.app.state.ctx) == 1
     return body

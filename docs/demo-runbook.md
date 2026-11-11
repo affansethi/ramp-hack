@@ -58,12 +58,17 @@ Ingest case 1 and read its queue:
 curl -s -b jar.txt -H "X-CSRF-Token: $TOKEN" -H 'Idempotency-Key: ev-1' \
   -H 'X-Requested-With: taxleak' -H 'Content-Type: application/json' \
   -d '{"scenario":"case1"}' $BASE/api/v1/demo/events
-PID=<purchase_id from above>
+JOB=<job_id from above>
+# The event response has purchase_id null until the fetch job finishes.
+# Re-GET the job, then the purchase. The worker does both steps in-process.
+curl -s -b jar.txt $BASE/api/v1/jobs/$JOB | python3 -m json.tool
+PID=<purchase_id from the job>
 curl -s -b jar.txt $BASE/api/v1/purchases/$PID | python3 -m json.tool
 ```
 
-If `queue` is briefly `processing`, wait a few seconds and re-GET — the
-in-process worker is still advancing the job. Then:
+If `queue` is briefly `processing`, or the job is still `QUEUED`/`RUNNING`,
+wait a few seconds and re-GET — the in-process worker fetches the simulator
+record, then advances the purchase. Then:
 
 - `queue == "held"` with `holds[0].named_fact == "required_fact_catalog"`:
   the catalog is still candidate (its current state in `rules/`). Every
@@ -78,12 +83,14 @@ the demo — review signoff belongs to AF, and agents never author it.
 ## 3. Cases 1–5: the click-by-click path
 
 Same three calls for every case — ingest, show the purchase, approve where
-the rules allow it:
+the rules allow it. Take `purchase_id` from `GET /jobs/{job_id}` once the
+fetch job succeeds, the same way as §2:
 
 ```bash
 curl -s -b jar.txt -H "X-CSRF-Token: $TOKEN" -H 'Idempotency-Key: ev-N' \
   -H 'X-Requested-With: taxleak' -H 'Content-Type: application/json' \
   -d '{"scenario":"caseN"}' $BASE/api/v1/demo/events
+curl -s -b jar.txt $BASE/api/v1/jobs/$JOB
 curl -s -b jar.txt $BASE/api/v1/purchases/$PID
 ```
 
