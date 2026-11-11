@@ -103,6 +103,7 @@ class ReferBody(BaseModel):
 
     action: Literal["leave_open", "send_to_advisor"]
     note: str = ""
+    expected_version: int
 
 
 class WorkpaperBody(BaseModel):
@@ -525,6 +526,7 @@ def refer(
         determination_id=determination_id,
         action=body.action,
         note=body.note,
+        expected_version=body.expected_version,
     )
     row = session.get(Purchase, determination.purchase_id)
     if row is None:
