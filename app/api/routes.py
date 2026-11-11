@@ -550,6 +550,16 @@ def totals(request: Request, session: Db) -> dict[str, object]:
     }
 
 
+def _draft_is_current(session: Session, determination_id: str) -> bool:
+    """Drafts exist only for an approved, current determination (spec §7)."""
+    row = session.get(Determination, determination_id)
+    return (
+        row is not None
+        and row.is_current
+        and row.unit_status in ("APPROVED", "APPROVED_FOR_PURSUIT")
+    )
+
+
 @router.get("/drafts/journal-entries")
 def journals(request: Request, session: Db) -> dict[str, object]:
     viewer = _viewer(request, session)
@@ -557,6 +567,8 @@ def journals(request: Request, session: Db) -> dict[str, object]:
     for draft in session.scalars(select(JournalEntryDraft)).all():
         purchase = session.get(Purchase, draft.purchase_id)
         if purchase is None or purchase.org_id != viewer.org_id:
+            continue
+        if not _draft_is_current(session, draft.determination_id):
             continue
         rows.append(
             {
@@ -580,6 +592,9 @@ def refund_letter(letter_id: str, request: Request, session: Db) -> dict[str, ob
     purchase = session.get(Purchase, letter.purchase_id)
     if purchase is None or purchase.org_id != viewer.org_id:
         raise DomainError("NOT_FOUND", "Letter not found.", 404)
+    if not _draft_is_current(session, letter.determination_id):
+        # A superseded or no-longer-approved result has no current draft.
+        raise DomainError("NOT_FOUND", "Letter is no longer current.", 404)
     return {
         **meta(request.app.state.settings),
         "id": letter.id,

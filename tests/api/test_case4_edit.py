@@ -24,7 +24,7 @@ from tests.api.conftest import (
     copy_scenario_rules,
     forbidden_total_field_names,
 )
-from tests.api.test_flow import GOOD_ENV, ROOT, _headers
+from tests.api.test_flow import GOOD_ENV, ROOT, _headers, _run
 
 _RULES = {
     "signed_categories": frozenset({"REMOTE_ACCESS_SAAS"}),
@@ -75,18 +75,6 @@ def _client(tmp_path: Path) -> Iterator[TestClient]:
         yield client
     for name, raw in repo.items():
         assert (ROOT / "rules" / name).read_bytes() == raw
-
-
-def _run(client: TestClient, scenario: str, key: str) -> dict[str, object]:
-    response = client.post(
-        "/api/v1/demo/events",
-        json={"scenario": scenario},
-        headers=_headers(key),
-    )
-    assert response.status_code == 200, response.text
-    body = response.json()
-    assert poll_once(client.app.state.ctx) == 1 or body["duplicate"] is True
-    return body
 
 
 def _poll_for_facts_version(
@@ -191,6 +179,13 @@ def test_case4_edit_supersedes_december_approval(tmp_path: Path) -> None:
         assert current["rule_reference"] is None
         assert current["rule_reference"] != "PLACEHOLDER:CA-DP-001"
         assert current["refund_letter_id"] is None
+        # The December letter belongs to a superseded result: no current draft.
+        stale = client.get(f"/api/v1/drafts/refund-letters/{letter_id}")
+        assert stale.status_code == 404, stale.text
+        assert stale.json()["error"]["code"] == "NOT_FOUND"
+        journals = _get(client, "/api/v1/drafts/journal-entries")["drafts"]
+        assert isinstance(journals, list)
+        assert all(row["purchase_id"] != purchase_id for row in journals)
 
         refused = client.post(
             f"/api/v1/determinations/{current['id']}/review",
