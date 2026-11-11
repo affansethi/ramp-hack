@@ -38,7 +38,7 @@ from app.domain.ruleset import (
 from app.main import create_app
 from app.models import Determination
 from app.worker.poller import poll_once
-from tests.api.test_flow import GOOD_ENV, ROOT, _headers, _open
+from tests.api.test_flow import GOOD_ENV, ROOT, _headers, _open, _run
 
 _PLACEHOLDER = "PLACEHOLDER:CA-DP-001"
 _WA_RULE = "WA-RAS-001"
@@ -165,16 +165,9 @@ def _login(client: TestClient, key: str) -> None:
 
 
 def _scenario(client: TestClient, scenario: str, key: str) -> dict[str, object]:
-    response = client.post(
-        "/api/v1/demo/events",
-        json={"scenario": scenario},
-        headers=_headers(key),
-    )
-    assert response.status_code == 200, response.text
-    body = response.json()
-    assert isinstance(body, dict)
-    assert poll_once(client.app.state.ctx) == 1
-    return body
+    # IDs-only webhooks (#25): the purchase exists after the worker's fetch, so
+    # use the shared helper that resolves it from the job and runs the pipeline.
+    return _run(client, scenario, key)
 
 
 def _detail(client: TestClient, purchase_id: object, key: str) -> dict[str, object]:
