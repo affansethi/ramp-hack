@@ -295,8 +295,9 @@ def test_later_bill_ocr_supersedes_an_approved_card(
         "/api/v1/audit-events", params={"object_id": purchase_id}
     ).json()["audit_events"]
     dedup = [event for event in events if event["command"] == "deduplicate"]
-    assert len(dedup) == 1
-    assert dedup[0]["object_version"] == 2
+    # Version 1: the new canonical purchase. Version 2: the merged bill.
+    assert [event["object_version"] for event in dedup] == [1, 2]
+    dedup = dedup[1:]
     assert dedup[0]["after_hash"] == _after_hash(dedup[0])
     _send(client, "evt-bill-ocr", "bills.created", "bill-ocr")
     with client.app.state.ctx.session_factory() as session:
@@ -471,18 +472,23 @@ def test_ambiguous_invoices_keep_one_audit_chain(
     events = client.get("/api/v1/audit-events", params={"object_id": first_id}).json()[
         "audit_events"
     ]
-    assert events[0]["command"] == "add_fact"
-    assert events[1]["command"].startswith("ambiguous_invoice_match:")
-    assert events[2]["command"].startswith("ambiguous_invoice_match:")
-    assert events[1]["command"] != events[2]["command"]
+    # Pipeline stage events (#53) come first and share the same chain.
+    start = [event["command"] for event in events].index("add_fact")
+    assert all(event["actor_id"] == "system" for event in events[:start])
     assert events[0]["before_hash"] == ""
-    assert events[1]["before_hash"] == events[0]["after_hash"]
-    assert events[2]["before_hash"] == events[1]["after_hash"]
-    assert events[1]["before_hash"] != ""
-    assert events[2]["before_hash"] != ""
+    for previous, current in zip(events, events[1:], strict=False):
+        assert current["before_hash"] == previous["after_hash"]
     for event in events:
-        assert event["object_version"] == 2
         assert event["after_hash"] == _after_hash(event)
+    matches = [
+        event
+        for event in events[start:]
+        if event["command"].startswith("ambiguous_invoice_match:")
+    ]
+    assert len(matches) == 2
+    assert matches[0]["command"] != matches[1]["command"]
+    for event in events[start:]:
+        assert event["object_version"] == 2
     detail = client.get(f"/api/v1/purchases/{first_id}").json()
     assert len(detail["possible_duplicate_ids"]) == 2
     assert detail["queue"] != "needs_human_review"
