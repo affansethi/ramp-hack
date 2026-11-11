@@ -42,7 +42,12 @@ def begin(
 
 
 def finish(
-    session: Session, org_id: str, key: str, canonical: str, payload: dict[str, object]
+    session: Session,
+    org_id: str,
+    key: str,
+    canonical: str,
+    payload: dict[str, object],
+    status_code: int = 200,
 ) -> None:
     session.add(
         IdempotencyKey(
@@ -50,8 +55,20 @@ def finish(
             org_id=org_id,
             key=key,
             body_hash=sha256(canonical.encode("utf-8")).hexdigest(),
-            status_code=200,
+            status_code=status_code,
             response_body=json.dumps(payload),
             created_at=utcnow(),
         )
     )
+
+
+def stored_status(session: Session, org_id: str, key: str) -> int:
+    """HTTP status of the stored replay, so a 202 route replays as 202."""
+    row = session.scalar(
+        select(IdempotencyKey).where(
+            IdempotencyKey.org_id == org_id, IdempotencyKey.key == key
+        )
+    )
+    if row is None:
+        return 200
+    return row.status_code

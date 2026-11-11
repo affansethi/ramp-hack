@@ -39,6 +39,20 @@ def upgrade_audit_hashes(engine: Engine) -> None:
                 )
 
 
+def upgrade_document_blob_key(engine: Engine) -> None:
+    """Add the import blob key without rewriting existing document rows."""
+    with engine.begin() as connection:
+        if "documents" not in inspect(connection).get_table_names():
+            return
+        columns = {
+            column["name"] for column in inspect(connection).get_columns("documents")
+        }
+        if "blob_key" not in columns:
+            connection.execute(
+                text("ALTER TABLE documents ADD COLUMN blob_key VARCHAR(400)")
+            )
+
+
 def upgrade_audit_stage_uniqueness(engine: Engine) -> None:
     """One stage event per object, command, and input version on retry."""
     with engine.begin() as connection:

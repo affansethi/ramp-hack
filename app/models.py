@@ -154,7 +154,12 @@ class Document(Base):
     __tablename__ = "documents"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    purchase_id: Mapped[str] = mapped_column(ForeignKey("purchases.id"), index=True)
+    # Null until a purchase exists: an import stores bytes first (#27) and
+    # #49 links the purchase later through the import job.
+    purchase_id: Mapped[str | None] = mapped_column(
+        ForeignKey("purchases.id"), nullable=True, index=True
+    )
+    blob_key: Mapped[str | None] = mapped_column(String(400), nullable=True)
     sha256: Mapped[str] = mapped_column(String(64))
     mime_type: Mapped[str] = mapped_column(String(80))
     pages: Mapped[int] = mapped_column(Integer)

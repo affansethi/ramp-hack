@@ -28,6 +28,7 @@ def init_database(url: str) -> sessionmaker[Session]:
     from app.migrations import (
         upgrade_audit_hashes,
         upgrade_audit_stage_uniqueness,
+        upgrade_document_blob_key,
         upgrade_fetch_input,
         upgrade_session_csrf,
         upgrade_workpapers,
@@ -40,6 +41,7 @@ def init_database(url: str) -> sessionmaker[Session]:
     upgrade_audit_stage_uniqueness(engine)
     upgrade_fetch_input(engine)
     upgrade_session_csrf(engine)
+    upgrade_document_blob_key(engine)
     upgrade_workpapers(engine)
     factory = make_session_factory(engine)
     with session_scope(factory) as session:
