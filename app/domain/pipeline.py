@@ -250,19 +250,11 @@ def ingest_fetched_record(
     transaction_id = inputs["object_id"]
     if inputs["event_type"] == "bills.created":
         transaction_id = "bill:" + transaction_id
-    existing = session.scalar(
-        select(Purchase).where(
-            Purchase.org_id == job.org_id,
-            Purchase.ramp_transaction_id == transaction_id,
-        )
-    )
+    existing = _purchase_for_ramp_object(session, job, transaction_id)
     if existing is not None:
-        # Same Ramp transaction: keep this event on the purchase and reconcile
-        # a new receipt tax without a second set of lines. Queue the advance
-        # before this fetch job takes the purchase id, or it looks pending.
-        _note_ocr_evidence(session, existing, tax)
-        if tax is not None:
-            _enqueue(session, job.org_id, existing.id)
+        # Amount and OCR feed the cross-check. A new value versions the purchase,
+        # supersedes the current result, and queues that check again.
+        _refresh_fetched_inputs(session, existing, amount, tax)
         event.purchase_id = job.purchase_id = existing.id
         return
     vendor = record["vendor"] or ""
@@ -323,6 +315,62 @@ def ingest_fetched_record(
     if result.purchase_id is not None:
         for other in ambiguous:
             _record_ambiguous(session, job.org_id, result.purchase_id, other.id)
+
+
+def _purchase_for_ramp_object(
+    session: Session, job: Job, transaction_id: str
+) -> Purchase | None:
+    """The canonical purchase for a Ramp card or bill, including a linked one.
+
+    A merged purchase keeps one ramp_transaction_id, but every fetch job that
+    resolved to it records its purchase_id, so a later event for the other
+    linked object resolves here instead of creating a second purchase.
+    """
+    direct = session.scalar(
+        select(Purchase).where(
+            Purchase.org_id == job.org_id,
+            Purchase.ramp_transaction_id == transaction_id,
+        )
+    )
+    if direct is not None:
+        return direct
+    prior = session.scalars(
+        select(Job)
+        .where(
+            Job.org_id == job.org_id,
+            Job.kind == "fetch",
+            Job.id != job.id,
+            Job.purchase_id.is_not(None),
+        )
+        .order_by(Job.created_at)
+    ).all()
+    for row in prior:
+        inputs = json.loads(row.input_payload or "{}")
+        object_id = inputs.get("object_id")
+        if not object_id:
+            continue
+        if inputs.get("event_type") == "bills.created":
+            object_id = "bill:" + object_id
+        if object_id == transaction_id and row.purchase_id is not None:
+            return session.get(Purchase, row.purchase_id)
+    return None
+
+
+def _refresh_fetched_inputs(
+    session: Session, purchase: Purchase, amount: str, tax: str | None
+) -> None:
+    changed = False
+    if purchase.ramp_entity_amount != amount:
+        purchase.ramp_entity_amount = amount
+        changed = True
+    if purchase.ramp_ocr_taxes != tax:
+        purchase.ramp_ocr_taxes = tax
+        changed = True
+    if not changed:
+        return
+    purchase.facts_version += 1
+    _supersede_current(session, purchase)
+    _enqueue(session, purchase.org_id, purchase.id)
 
 
 def advance_purchase(session: Session, purchase_id: str, ruleset: Ruleset) -> None:
@@ -508,6 +556,9 @@ def _write_facts(
         header["delivery_method"] = "electronic"
         header["access_model"] = "remote"
     for key, value in header.items():
+        if not value:
+            # Missing is not an empty string: no fact, so the hold check names it.
+            continue
         _add_fact(
             session,
             purchase,

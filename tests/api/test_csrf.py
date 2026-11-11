@@ -22,6 +22,7 @@ from app.models import (
     DemoSession,
     Fact,
     IdempotencyKey,
+    Job,
     JournalEntryDraft,
     LiabilityLine,
     Person,
@@ -31,7 +32,6 @@ from app.models import (
     Workpaper,
 )
 from app.seed import ORG_ID, PERSON_ID
-from app.worker.poller import poll_once
 from tests.api.test_contracts import _review_body
 from tests.api.test_flow import (  # noqa: F401
     GOOD_ENV,
@@ -437,8 +437,6 @@ def test_origin_allowlist_is_exact_and_unset_accepts_a_missing_origin(
             "/api/v1/demo/events", json={"scenario": "case6"}, headers=event_headers
         )
         assert event.status_code == 200, event.text
-        assert poll_once(client.app.state.ctx) == 1
-        assert poll_once(client.app.state.ctx) == 1
         blocked = client.post(
             "/api/v1/demo/events",
             json={"scenario": "case1"},
@@ -460,7 +458,7 @@ def test_origin_allowlist_is_exact_and_unset_accepts_a_missing_origin(
             },
         )
         assert absent.status_code == 403
-        assert _count(client, Purchase) == 1
+        assert _count(client, Job) == 1
         assert _has_key(client, "event-blocked") is False
         assert _has_key(client, "event-absent") is False
 

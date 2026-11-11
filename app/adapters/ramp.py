@@ -51,7 +51,9 @@ class RampSimulator:
     ) -> dict[str, str | None]:
         records = self.bills if event_type == "bills.created" else self.transactions
         record = records[object_id]
-        receipt_ids = [receipt_id] if receipt_id else record.get("receipts", [])
+        receipt_ids = dict.fromkeys(
+            [*record.get("receipts", []), *([receipt_id] if receipt_id else [])]
+        )
         taxes = [
             tax["tax_amount"]
             for rid in receipt_ids
@@ -71,8 +73,22 @@ class RampSimulator:
             currency_code=record["currency_code"],
             vendor=record.get("merchant_name", record.get("vendor", "")),
             invoice_number=record.get("invoice_number", ""),
-            invoice_date=record.get(
-                "invoice_date", record.get("user_transaction_time", "")[:10]
-            ),
+            invoice_date=_invoice_date(record),
+            transaction_date=_transaction_date(record),
             ocr_taxes=total,
         )
+
+
+def _invoice_date(record: dict[str, Any]) -> str:
+    """The printed invoice date only; "" when the record has none.
+
+    A card's transaction time is not an invoice date: substituting it lets a
+    card falsely match a bill dated that day, so a missing date stays missing.
+    """
+    invoice_date = record.get("invoice_date")
+    return invoice_date if isinstance(invoice_date, str) and invoice_date else ""
+
+
+def _transaction_date(record: dict[str, Any]) -> str:
+    stamp = record.get("user_transaction_time")
+    return stamp[:10] if isinstance(stamp, str) else ""

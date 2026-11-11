@@ -510,3 +510,58 @@ def _assert_receipt_invalidated(
         purchase = session.get(Purchase, purchase_id)
         assert purchase is not None
         assert purchase.ramp_ocr_taxes == "1.00"
+
+
+def test_card_without_an_invoice_date_never_exactly_matches_a_bill(
+    signed_client: TestClient,  # noqa: F811
+) -> None:
+    client = signed_client
+    simulator = client.app.state.ctx.ramp
+    # A card with a transaction time on the bill's date but no printed date.
+    simulator.transactions["card-nodate"] = dict(
+        entity_amount="50.00",
+        currency_code="USD",
+        merchant_name="Synthetic Vendor",
+        invoice_number="INV-NODATE",
+        user_transaction_time="2026-11-15T09:00:00Z",
+        receipts=[],
+    )
+    _send(client, "evt-card-nodate", "transactions.cleared", "card-nodate")
+    _put(client, key="bill-nodate", bill=True, invoice="INV-NODATE")
+    _send(client, "evt-bill-nodate", "bills.created", "bill-nodate")
+    with client.app.state.ctx.session_factory() as session:
+        rows = list(session.scalars(select(Purchase)).all())
+        assert len(rows) == 2
+        card = next(row for row in rows if row.ramp_transaction_id == "card-nodate")
+        assert card.invoice_date == ""
+    events = client.get("/api/v1/audit-events", params={"object_id": card.id}).json()[
+        "audit_events"
+    ]
+    assert any(
+        event["command"].startswith("ambiguous_invoice_match:") for event in events
+    )
+
+
+def test_later_event_for_a_linked_card_resolves_to_the_merged_purchase(
+    signed_client: TestClient,  # noqa: F811
+) -> None:
+    client = signed_client
+    simulator = client.app.state.ctx.ramp
+    _put(client, key="bill-first", bill=True, invoice="INV-LINK")
+    _send(client, "evt-bill-first", "bills.created", "bill-first")
+    _put(client, key="card-later", bill=False, invoice="INV-LINK")
+    _send(client, "evt-card-later", "transactions.cleared", "card-later")
+    with client.app.state.ctx.session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(Purchase)) == 1
+        purchase_id = session.scalars(select(Purchase.id)).one()
+    # The card's invoice metadata later disappears; it must not split off.
+    del simulator.transactions["card-later"]["invoice_number"]
+    del simulator.transactions["card-later"]["invoice_date"]
+    _send(client, "evt-card-again", "transactions.receipt_added", "card-later")
+    with client.app.state.ctx.session_factory() as session:
+        assert session.scalar(select(func.count()).select_from(Purchase)) == 1
+        linked = session.scalar(
+            select(SourceEvent).where(SourceEvent.external_event_id == "evt-card-again")
+        )
+        assert linked is not None
+        assert linked.purchase_id == purchase_id

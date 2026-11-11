@@ -21,7 +21,12 @@ from starlette.datastructures import QueryParams
 from app.adapters.ramp import signature_matches
 from app.api.guards import COOKIE, new_csrf_token
 from app.api.idempotency import begin, finish
-from app.api.serialize import meta, purchase_detail, purchase_summary
+from app.api.serialize import (
+    meta,
+    purchase_detail,
+    purchase_summary,
+    workpaper_detail,
+)
 from app.clock import utcnow
 from app.contracts.jobs import read_job
 from app.demo.scenarios import get_scenario, scenario_ids
@@ -103,6 +108,7 @@ class ReferBody(BaseModel):
 
     action: Literal["leave_open", "send_to_advisor"]
     note: str = ""
+    expected_version: int
 
 
 class WorkpaperBody(BaseModel):
@@ -499,6 +505,7 @@ def review(
         approval_path=body.approval_path,
         reason=body.reason,
         expected_version=body.expected_version,
+        rules_dir=request.app.state.settings.rules_dir,
     )
     row = session.get(Purchase, determination.purchase_id)
     if row is None:
@@ -524,6 +531,7 @@ def refer(
         determination_id=determination_id,
         action=body.action,
         note=body.note,
+        expected_version=body.expected_version,
     )
     row = session.get(Purchase, determination.purchase_id)
     if row is None:
@@ -579,7 +587,11 @@ def refund_letter(letter_id: str, request: Request, session: Db) -> dict[str, ob
         "invoice_number": letter.invoice_number,
         "amount": {"value": letter.amount, "currency": "USD"},
         "basis_text": letter.basis_text,
-        "basis_note": "Basis text is not signed. This draft is not sent.",
+        "basis_note": (
+            "This draft is not sent."
+            if letter.basis_text
+            else "Basis text is not signed. This draft is not sent."
+        ),
         "status": letter.status,
     }
 
@@ -618,6 +630,18 @@ def mark_ready(
     payload = _workpaper_json(request, session, workpaper)
     finish(session, viewer.org_id, _key(request) or "", canonical, payload)
     return payload
+
+
+@router.get("/workpapers/{workpaper_id}")
+def workpaper(workpaper_id: str, request: Request, session: Db) -> dict[str, object]:
+    viewer = _viewer(request, session)
+    row = session.get(Workpaper, workpaper_id)
+    if row is None or row.org_id != viewer.org_id:
+        raise DomainError("NOT_FOUND", "Workpaper not found.", 404)
+    return {
+        **meta(request.app.state.settings),
+        **workpaper_detail(session, row),
+    }
 
 
 @router.get("/workpapers/{workpaper_id}/export")

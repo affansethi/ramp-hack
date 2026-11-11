@@ -95,9 +95,10 @@ def _run(api: Api, scenario: str, key: str) -> dict[str, object]:
     body = response.json()
     assert poll_once(api.client.app.state.ctx) == 1 or body["duplicate"] is True
     if body["purchase_id"] is None:
-        with _session(api) as session:
+        ctx = api.client.app.state.ctx
+        with ctx.session_factory() as session:
             body["purchase_id"] = session.get(Job, body["job_id"]).purchase_id
-        assert poll_once(api.client.app.state.ctx) == 1
+        assert poll_once(ctx) == 1
     return body
 
 

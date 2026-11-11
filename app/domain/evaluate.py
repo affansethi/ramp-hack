@@ -2,16 +2,17 @@
 
 from dataclasses import dataclass
 from datetime import date
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Literal
 
-from app.domain.moneyutil import emit_cents, parse_decimal
+from app.domain.moneyutil import CENT, emit_cents, parse_decimal
 from app.domain.ruleset import (
     RateEntry,
     RuleEntry,
     Ruleset,
     is_placeholder,
     rate_is_active,
+    rounding_is_active,
     rule_is_active,
 )
 
@@ -81,7 +82,7 @@ def evaluate_line(ruleset: Ruleset, request: EngineLineRequest) -> EngineLineRes
             if shipping is None:
                 return _error("INEXACT_CENTS")
             base += shipping
-        rendered = emit_cents(base * rate)
+        rendered = _expected_cents(base * rate, ruleset, request.jurisdiction)
         if rendered is None:
             return _error("INEXACT_CENTS")
         expected = rendered
@@ -145,6 +146,19 @@ def _find_rate(ruleset: Ruleset, request: EngineLineRequest) -> RateEntry | None
 
 def _blank(value: str | None) -> bool:
     return value is None or not value.strip()
+
+
+def _expected_cents(amount: Decimal, ruleset: Ruleset, jurisdiction: str) -> str | None:
+    exact = emit_cents(amount)
+    if exact is not None:
+        return exact
+    basis = ruleset.rounding
+    if not rounding_is_active(basis):
+        return None
+    if basis is None or not basis.jurisdiction or basis.jurisdiction != jurisdiction:
+        return None
+    quantized = amount.quantize(CENT, rounding=ROUND_HALF_UP)
+    return f"{quantized:.2f}"
 
 
 def _money(value: str) -> Decimal | None:
