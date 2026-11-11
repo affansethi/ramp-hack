@@ -144,6 +144,34 @@ function Determination({ det, actions, onDone }) {
   );
 }
 
+function AnswerForm({ question, version, onDone }) {
+  const [answer, setAnswer] = useState("");
+  const [reference, setReference] = useState("");
+  const [message, setMessage] = useState("");
+  async function send(body) {
+    setMessage("");
+    try {
+      await post(`/questions/${question.id}/answers`, { ...body, expected_version: version });
+      onDone();
+    } catch (err) {
+      setMessage(`${err.code || "Refused"}: ${err.message}`);
+    }
+  }
+  return (
+    <div className="decide" aria-label="Answer the question">
+      <input aria-label="Answer" placeholder="Answer, e.g. Seattle, WA" value={answer} onChange={(e) => setAnswer(e.target.value)} />
+      <input aria-label="Evidence reference" placeholder="Evidence (seat export, named person)" value={reference} onChange={(e) => setReference(e.target.value)} />
+      <button type="button" disabled={!answer || !reference} onClick={() => send({ answer, evidence_reference: reference })}>
+        Record sourced answer
+      </button>
+      <button type="button" className="secondary" onClick={() => send({ answer: "I don't know" })}>
+        I don't know
+      </button>
+      {message ? <span className="error">{message}</span> : null}
+    </div>
+  );
+}
+
 function FactEdit({ item, onDone }) {
   const [field, setField] = useState("line_amount");
   const [lineId, setLineId] = useState(item.lines?.[0]?.id || "");
@@ -246,9 +274,14 @@ export default function ItemView({ id, tick }) {
             </p>
           ))}
           {(item.questions || []).map((q) => (
-            <p key={q.id} className="sub">
-              Asked {q.recipient} at {q.asked_at}: “{q.prompt}” Reply: {q.answer ? q.answer : q.state}
-            </p>
+            <div key={q.id}>
+              <p className="sub">
+                Asked {q.recipient} at {q.asked_at}: “{q.prompt}” Reply: {q.answer ? `${q.answer} (${q.state})` : q.state}
+              </p>
+              {q.state !== "answered" ? (
+                <AnswerForm question={q} version={item.facts_version} onDone={refresh} />
+              ) : null}
+            </div>
           ))}
           {item.purchase_amount ? (
             <p>Purchase amount, not tax: {money(item.purchase_amount)}</p>

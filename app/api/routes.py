@@ -36,6 +36,7 @@ from app.contracts.jobs import read_job
 from app.demo.scenarios import get_scenario, scenario_ids
 from app.domain.commands import (
     add_human_fact,
+    answer_question,
     collect_totals,
     create_workpaper,
     export_workpaper,
@@ -95,6 +96,15 @@ class FactBody(BaseModel):
     reason: str
     expected_version: int
     line_id: str | None = None
+
+
+class AnswerBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    answer: str
+    evidence_reference: str | None = None
+    redirect_to: str | None = None
+    expected_version: int
 
 
 class ReviewBody(BaseModel):
@@ -700,6 +710,30 @@ def facts(
     if row is None:
         raise DomainError("NOT_FOUND", "Purchase not found.", 404)
     payload = purchase_detail(session, row, request.app.state.settings)
+    finish(session, viewer.org_id, _key(request) or "", canonical, payload)
+    return payload
+
+
+@router.post("/questions/{question_id}/answers")
+def answers(
+    question_id: str, body: AnswerBody, request: Request, session: Db
+) -> dict[str, object]:
+    viewer = _viewer(request, session)
+    canonical = body.model_dump_json()
+    stored = begin(session, viewer.org_id, _key(request), canonical)
+    if stored is not None:
+        return stored
+    purchase = answer_question(
+        session,
+        org_id=viewer.org_id,
+        actor_id=viewer.person_id,
+        question_id=question_id,
+        answer=body.answer,
+        evidence_reference=body.evidence_reference,
+        redirect_to=body.redirect_to,
+        expected_version=body.expected_version,
+    )
+    payload = purchase_detail(session, purchase, request.app.state.settings)
     finish(session, viewer.org_id, _key(request) or "", canonical, payload)
     return payload
 
