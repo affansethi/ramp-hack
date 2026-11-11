@@ -25,7 +25,12 @@ from app.adapters import storage as storage_module
 from app.adapters.ramp import signature_matches
 from app.api.guards import COOKIE, new_csrf_token
 from app.api.idempotency import begin, finish, stored_status
-from app.api.serialize import meta, purchase_detail, purchase_summary
+from app.api.serialize import (
+    meta,
+    purchase_detail,
+    purchase_summary,
+    workpaper_detail,
+)
 from app.clock import utcnow
 from app.contracts.jobs import read_job
 from app.demo.scenarios import get_scenario, scenario_ids
@@ -789,6 +794,18 @@ def mark_ready(
     payload = _workpaper_json(request, session, workpaper)
     finish(session, viewer.org_id, _key(request) or "", canonical, payload)
     return payload
+
+
+@router.get("/workpapers/{workpaper_id}")
+def workpaper(workpaper_id: str, request: Request, session: Db) -> dict[str, object]:
+    viewer = _viewer(request, session)
+    row = session.get(Workpaper, workpaper_id)
+    if row is None or row.org_id != viewer.org_id:
+        raise DomainError("NOT_FOUND", "Workpaper not found.", 404)
+    return {
+        **meta(request.app.state.settings),
+        **workpaper_detail(session, row),
+    }
 
 
 @router.get("/workpapers/{workpaper_id}/export")
