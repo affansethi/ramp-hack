@@ -2,3 +2,9 @@
 .env
 __pycache__/
 .DS_Store
+*.db
+.pytest_cache/
+web/node_modules/
+web/dist/
+web/test-results/
+web/playwright-report/

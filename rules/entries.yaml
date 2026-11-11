@@ -1,0 +1,81 @@
+# AF signed 2026-11-09 after checking the primary-source URLs below.
+# PLACEHOLDER ids never activate. calculation is evaluator arithmetic, not a tax conclusion.
+rules:
+  - id: WA-RAS-001
+    jurisdiction: WA
+    category: REMOTE_ACCESS_SAAS
+    treatment: Retail sale. Buyer owes use tax when the vendor charged none
+    calculation: net
+    applies_when: single_state
+    effective_from: "2009-07-26"
+    effective_to:
+    timing_basis: service_period_start
+    primary_source_url: https://app.leg.wa.gov/RCW/default.aspx?cite=82.04.050
+    review_status: reviewed
+    reviewed_by: AF
+    reviewed_at: "2026-11-09"
+  - id: WA-MPU-001
+    jurisdiction: WA
+    category: REMOTE_ACCESS_SAAS
+    treatment: Apportion by users in WA over all users, only if supported by records
+    calculation: net
+    applies_when: multi_state
+    effective_from: "2009-07-26"
+    effective_to:
+    timing_basis: service_period_start
+    primary_source_url: https://app.leg.wa.gov/WAC/default.aspx?cite=458-20-15503
+    review_status: reviewed
+    reviewed_by: AF
+    reviewed_at: "2026-11-09"
+  - id: CA-RAS-001
+    jurisdiction: CA
+    category: REMOTE_ACCESS_SAAS
+    treatment: Not taxable
+    calculation: not_taxable
+    applies_when: any
+    effective_from: "2014-04-01"
+    effective_to: "2026-12-31"
+    timing_basis: service_period_start
+    primary_source_url: https://www.cdtfa.ca.gov/lawguides/vol1/sutr/1502.html
+    review_status: reviewed
+    reviewed_by: AF
+    reviewed_at: "2026-11-09"
+  - id: "PLACEHOLDER:CA-DP-001"
+    jurisdiction: CA
+    category: REMOTE_ACCESS_SAAS
+    treatment: Inactive proposal for the CA remote-software transition. Not a reviewed rule.
+    calculation: net
+    applies_when: any
+    effective_from: "2027-01-01"
+    effective_to:
+    timing_basis: service_period_start
+    primary_source_url: https://cdtfa.ca.gov/formspubs/l1036.pdf
+    review_status: candidate
+    reviewed_by:
+    reviewed_at:
+  - id: NY-SW-001
+    jurisdiction: NY
+    category: REMOTE_ACCESS_SAAS
+    treatment: Taxable, sourced to where users are
+    calculation: net
+    applies_when: any
+    effective_from: "2010-01-01"
+    effective_to:
+    timing_basis: service_period_start
+    primary_source_url: https://www.tax.ny.gov/pdf/tg_bulletins/sales/b14_128s.pdf
+    review_status: reviewed
+    reviewed_by: AF
+    reviewed_at: "2026-11-09"
+  - id: NY-TPP-001
+    jurisdiction: NY
+    category: COMPUTER_HARDWARE
+    treatment: Taxable at the delivery location rate, including shipping
+    calculation: net_plus_shipping
+    applies_when: any
+    effective_from: "2010-01-01"
+    effective_to:
+    timing_basis: delivery_date
+    primary_source_url: https://tax.ny.gov/pubs_and_bulls/tg_bulletins/st/use_tax_for_businesses.htm
+    review_status: reviewed
+    reviewed_by: AF
+    reviewed_at: "2026-11-09"

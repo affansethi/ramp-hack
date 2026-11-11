@@ -1,0 +1,173 @@
+# Evidence for catalog-COMPUTER_HARDWARE (research pass, issue #42).
+# Status of rules/catalog.yaml is UNCHANGED (candidate). Values below are
+# proposed only; the blind verification issue decides activation.
+# Every quote was copied verbatim from the snapshot file named in its source.
+item: catalog-COMPUTER_HARDWARE
+catalog_status: candidate
+claims:
+  - field: vendor_name
+    value: required
+    product_basis: Design Spec 4.1, invoice row (vendor name; accepted source is an invoice or spend-record span)
+    sources:
+      - url: https://app.leg.wa.gov/WAC/default.aspx?cite=458-20-15503
+        authority: regulation
+        pinpoint: WAC 458-20-15503, subsection (607) Records requirement
+        quote: |
+          Every taxpayer liable for any tax collected by the department must keep and preserve, for a period of five years, suitable records to determine the amount of tax owed.
+        retrieved_at: "2026-11-10"
+        snapshot: snapshots/wac-458-20-15503.txt
+        snapshot_sha256: 1dab5a4599db112f349ceb8ddce394b65051b20a2527409da1119195ebf850dc
+      - url: https://app.leg.wa.gov/WAC/default.aspx?cite=458-20-15503
+        authority: regulation
+        pinpoint: WAC 458-20-15503, subsection (607) Records requirement
+        quote: |
+          All of taxpayer's books, records, and invoices must be open to examination by the department.
+        retrieved_at: "2026-11-10"
+        snapshot: snapshots/wac-458-20-15503.txt
+        snapshot_sha256: 1dab5a4599db112f349ceb8ddce394b65051b20a2527409da1119195ebf850dc
+  - field: invoice_date
+    value: required
+    product_basis: Design Spec 4.1, invoice row (invoice date; accepted source is an invoice or spend-record span). The date anchors the reporting period and the signed hardware rule timing basis (delivery_date).
+    sources:
+      - url: https://app.leg.wa.gov/WAC/default.aspx?cite=458-20-15503
+        authority: regulation
+        pinpoint: WAC 458-20-15503, subsection (607) Records requirement
+        quote: |
+          All of taxpayer's books, records, and invoices must be open to examination by the department.
+        retrieved_at: "2026-11-10"
+        snapshot: snapshots/wac-458-20-15503.txt
+        snapshot_sha256: 1dab5a4599db112f349ceb8ddce394b65051b20a2527409da1119195ebf850dc
+  - field: line_description
+    value: required
+    product_basis: Design Spec 4.1, invoice row (line description; accepted source is an invoice or spend-record span). The description identifies the taxable property.
+    sources:
+      - url: https://app.leg.wa.gov/WAC/default.aspx?cite=458-20-15503
+        authority: regulation
+        pinpoint: WAC 458-20-15503, subsection (607) Records requirement
+        quote: |
+          Every taxpayer liable for any tax collected by the department must keep and preserve, for a period of five years, suitable records to determine the amount of tax owed.
+        retrieved_at: "2026-11-10"
+        snapshot: snapshots/wac-458-20-15503.txt
+        snapshot_sha256: 1dab5a4599db112f349ceb8ddce394b65051b20a2527409da1119195ebf850dc
+  - field: line_amount
+    value: required
+    product_basis: Design Spec 4.1, invoice row (line amount; accepted source is an invoice or spend-record span)
+    sources:
+      - url: https://www.tax.ny.gov/pubs_and_bulls/tg_bulletins/st/use_tax_for_businesses.htm
+        authority: agency_guidance
+        pinpoint: Use Tax for Businesses, Calculating use tax on purchases of tangible personal property
+        quote: |
+          Any use tax due on tangible personal property purchased by a business is computed on the price paid by the business for the property.
+        retrieved_at: "2026-11-10"
+        snapshot: snapshots/ny-use-tax-for-businesses.txt
+        snapshot_sha256: 3d9bec844b4caba535912c297dc72ce6343adf2489fb63df451c72ed1bd249ac
+      - url: https://www.tax.ny.gov/pubs_and_bulls/tg_bulletins/st/use_tax_for_businesses.htm
+        authority: agency_guidance
+        pinpoint: Use Tax for Businesses, How to calculate use tax
+        quote: |
+          Consideration is the dollar value of all amounts paid for any property or service.
+        retrieved_at: "2026-11-10"
+        snapshot: snapshots/ny-use-tax-for-businesses.txt
+        snapshot_sha256: 3d9bec844b4caba535912c297dc72ce6343adf2489fb63df451c72ed1bd249ac
+  - field: buyer_entity
+    value: required
+    product_basis: Design Spec 4.1, invoice row (buyer entity; bill-to alone never establishes hardware delivery, it is context for why a vendor may have charged tax)
+    sources:
+      - url: https://app.leg.wa.gov/WAC/default.aspx?cite=458-20-15503
+        authority: regulation
+        pinpoint: WAC 458-20-15503, subsection (607) Records requirement
+        quote: |
+          Every taxpayer liable for any tax collected by the department must keep and preserve, for a period of five years, suitable records to determine the amount of tax owed.
+        retrieved_at: "2026-11-10"
+        snapshot: snapshots/wac-458-20-15503.txt
+        snapshot_sha256: 1dab5a4599db112f349ceb8ddce394b65051b20a2527409da1119195ebf850dc
+  - field: tax_charged
+    value: required
+    product_basis: Design Spec 4.1, tax-charged rows (amount including "none shown"; jurisdiction when charged) plus the explicit-zero rule (a sourced zero reaches the engine; a silent invoice holds)
+    sources:
+      - url: https://www.tax.ny.gov/pubs_and_bulls/tg_bulletins/st/use_tax_for_businesses.htm
+        authority: agency_guidance
+        pinpoint: Use Tax for Businesses, Sales and use tax forms, Form ST-130 travel-agency computer example
+        quote: |
+          The corporation purchases a computer over the Internet from a seller located outside New York State, who did not collect New York State sales tax from the corporation. The seller has the computer delivered to the travel agency's office in New York. Use tax on the purchase must be paid directly to the Tax Department using the Form ST-130 within 20 days of its delivery to the travel agency.
+        retrieved_at: "2026-11-10"
+        snapshot: snapshots/ny-use-tax-for-businesses.txt
+        snapshot_sha256: 3d9bec844b4caba535912c297dc72ce6343adf2489fb63df451c72ed1bd249ac
+      - url: https://app.leg.wa.gov/WAC/default.aspx?cite=458-20-15503
+        authority: regulation
+        pinpoint: WAC 458-20-15503, subsection (e) Reporting
+        quote: |
+          A buyer claiming an exemption under this rule must report and pay state and local use tax directly to the department.
+        retrieved_at: "2026-11-10"
+        snapshot: snapshots/wac-458-20-15503.txt
+        snapshot_sha256: 1dab5a4599db112f349ceb8ddce394b65051b20a2527409da1119195ebf850dc
+  - field: delivery_evidence
+    value: required
+    product_basis: Design Spec 4.1, hardware row (confirmed delivery/ship-to required; bill-to never establishes delivery). The SaaS location ladder does not apply to hardware.
+    sources:
+      - url: https://www.tax.ny.gov/pubs_and_bulls/tg_bulletins/st/use_tax_for_businesses.htm
+        authority: agency_guidance
+        pinpoint: Use Tax for Businesses, How to calculate use tax
+        quote: |
+          Generally, the rate of tax used to compute the use tax due is the rate in effect where the business takes delivery of an item or service, or where it uses the item or service, if higher.
+        retrieved_at: "2026-11-10"
+        snapshot: snapshots/ny-use-tax-for-businesses.txt
+        snapshot_sha256: 3d9bec844b4caba535912c297dc72ce6343adf2489fb63df451c72ed1bd249ac
+      - url: https://www.tax.ny.gov/pubs_and_bulls/tg_bulletins/st/use_tax_for_businesses.htm
+        authority: agency_guidance
+        pinpoint: Use Tax for Businesses, Sales and use tax forms, Form ST-130 travel-agency computer example
+        quote: |
+          The seller has the computer delivered to the travel agency's office in New York. Use tax on the purchase must be paid directly to the Tax Department using the Form ST-130 within 20 days of its delivery to the travel agency.
+        retrieved_at: "2026-11-10"
+        snapshot: snapshots/ny-use-tax-for-businesses.txt
+        snapshot_sha256: 3d9bec844b4caba535912c297dc72ce6343adf2489fb63df451c72ed1bd249ac
+  - field: shipping
+    value: required
+    product_basis: Design Spec 4.1 hardware rule (sourced shipping amount, explicit zero allowed, is part of the signed rule's taxable base; NY-TPP-001 calculation is net_plus_shipping)
+    sources:
+      - url: https://www.tax.ny.gov/pubs_and_bulls/tg_bulletins/st/use_tax_for_businesses.htm
+        authority: agency_guidance
+        pinpoint: Use Tax for Businesses, How to calculate use tax
+        quote: |
+          Use tax is generally due on the consideration given or contracted to be given for the property or service, or for the use of the property or service, including any charges by the seller to the user for shipping or handling.
+        retrieved_at: "2026-11-10"
+        snapshot: snapshots/ny-use-tax-for-businesses.txt
+        snapshot_sha256: 3d9bec844b4caba535912c297dc72ce6343adf2489fb63df451c72ed1bd249ac
+      - url: https://www.tax.ny.gov/pubs_and_bulls/tg_bulletins/st/use_tax_for_businesses.htm
+        authority: agency_guidance
+        pinpoint: Use Tax for Businesses, How to calculate use tax (what consideration includes)
+        quote: |
+          charges that a purchaser, lessee, or licensee is required to pay (such as a delivery charge); and any other agreement for payment.
+        retrieved_at: "2026-11-10"
+        snapshot: snapshots/ny-use-tax-for-businesses.txt
+        snapshot_sha256: 3d9bec844b4caba535912c297dc72ce6343adf2489fb63df451c72ed1bd249ac
+attestations:
+  - role: research
+    lane: atlas
+    model: muse-spark
+    issue: "#42"
+    date: "2026-11-10"
+    blind: true
+    conclusion: agree
+    notes: Research pass for issue 42 by Muse Code (Muse Spark, Meta Muse Spark). Each page fetched with curl on 2026-11-10 and saved under rules/evidence/snapshots/; every quote copied verbatim from its snapshot. Values are proposed only; rules/catalog.yaml statuses left candidate for the blind verification issue.
+  - role: verify
+    lane: droid
+    model: claude-opus-5-5
+    issue: "#110"
+    date: "2026-11-10"
+    blind: true
+    conclusion: agree
+    notes: >-
+      Blind pass by Droid (Claude Opus 5.5, Anthropic) on a different lane and model family. The
+      independent answer (verification/catalog-COMPUTER_HARDWARE.droid.yaml, written before this
+      file or the catalog's required_keys were opened) matches exactly: the same 8 required keys,
+      vendor_name, invoice_date, line_description, line_amount, buyer_entity, tax_charged,
+      delivery_evidence, shipping. Both passes leave the SaaS-only keys out, treat
+      tax_charged_jurisdiction as conditional (enforced in app/domain/holds.py) and bill_to as
+      informational. Evidence audit: every research URL is allowlisted, every quote appears in its
+      snapshot, and every snapshot SHA-256 matches the committed (LF) bytes. Non-blocking
+      observation for AF: hardware is scoped to the one NY case, yet several common-field claims
+      cite WAC 458-20-15503 (a WA digital-products rule, records requirement); the NY Use Tax for
+      Businesses and TB-ST-838 quotes in the verifier file give NY-specific support for
+      delivery_evidence, shipping and tax_charged. Evidence only; catalog.yaml stays candidate until
+      AF signs.

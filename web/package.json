@@ -1,0 +1,25 @@
+{
+  "name": "tax-leak-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Tax Leak static React shell (issue #32): banner, queues, separate totals. No tax logic.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build && rm -rf ../app/static && mkdir -p ../app/static && cp -r dist/. ../app/static/",
+    "preview": "vite preview",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.57.0",
+    "@testing-library/react": "16.1.0",
+    "@vitejs/plugin-react": "4.3.4",
+    "jsdom": "25.0.1",
+    "vite": "5.4.11",
+    "vitest": "2.1.8"
+  }
+}

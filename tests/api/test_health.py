@@ -1,12 +1,37 @@
-"""Health endpoint: reports modes, never calls the model (architecture §4)."""
+"""Health endpoint: reports modes and storage, never calls the model."""
 
+import pytest
 from fastapi.testclient import TestClient
 
+from app.adapters import storage as blob_storage
 from app.main import create_app
+
+pytestmark = pytest.mark.usefixtures("_clear_azure_credentials")
+
+STORAGE_ENV = (
+    "AZURE_STORAGE_ACCOUNT_URL",
+    "STORAGE_ACCOUNT_URL",
+    "WEBSITE_SITE_NAME",
+)
+
+
+@pytest.fixture
+def _clear_azure_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in blob_storage.AZURE_CREDENTIAL_ENV:
+        monkeypatch.delenv(name, raising=False)
+
+
+def _clear_storage_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in STORAGE_ENV:
+        monkeypatch.delenv(name, raising=False)
+
+
+def _client() -> TestClient:
+    return TestClient(create_app(start_worker=False))
 
 
 def test_health_reports_modes() -> None:
-    client = TestClient(create_app())
+    client = _client()
     response = client.get("/health")
     assert response.status_code == 200
     body = response.json()
@@ -15,8 +40,226 @@ def test_health_reports_modes() -> None:
     assert body["engine_mode"] == "mock_reviewed_ruleset"
     assert body["llm_mode"] == "replay"
     assert body["llm_replay"] is True
+    assert body["database"] == "ok"
+    assert body["storage"] == "skipped"
 
 
 def test_health_also_served_under_api_v1() -> None:
-    client = TestClient(create_app())
-    assert client.get("/api/v1/health").status_code == 200
+    client = _client()
+    response = client.get("/api/v1/health")
+    assert response.status_code == 200
+    assert response.json()["storage"] == "skipped"
+    assert response.json()["status"] == "ok"
+
+
+def test_health_storage_skipped_without_credential_call(monkeypatch) -> None:
+    from app.adapters import storage
+
+    _clear_storage_config(monkeypatch)
+
+    def boom(*a, **k):
+        raise AssertionError("must not be called")
+
+    monkeypatch.setattr(storage, "DefaultAzureCredential", boom)
+    monkeypatch.setattr(storage, "BlobServiceClient", boom)
+    response = TestClient(create_app()).get("/health")
+    assert response.status_code == 200
+    assert response.json()["storage"] == "skipped"
+
+
+def test_health_storage_unavailable_when_check_raises(monkeypatch) -> None:
+    from app.adapters import storage
+
+    class Broken:
+        def get_container_properties(self, **kwargs):
+            raise RuntimeError("down")
+
+    monkeypatch.setenv("AZURE_STORAGE_ACCOUNT_URL", "https://example.invalid")
+    monkeypatch.setattr(storage, "_probe_container", lambda: Broken())
+    response = TestClient(create_app()).get("/health")
+    assert response.status_code == 200
+    assert response.json()["storage"] == "unavailable"
+
+
+def test_health_skips_storage_without_a_credential_or_model_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_storage_config(monkeypatch)
+    calls: list[str] = []
+
+    class FakeCredential:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+            calls.append("credential")
+
+    class FakeBlob:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+            calls.append("blob")
+
+    def fake_extract(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        calls.append("model")
+
+    monkeypatch.setattr(blob_storage, "DefaultAzureCredential", FakeCredential)
+    monkeypatch.setattr(blob_storage, "BlobServiceClient", FakeBlob)
+    monkeypatch.setattr("app.adapters.extractor.extract_bounded", fake_extract)
+
+    client = _client()
+    for path in ("/health", "/api/v1/health"):
+        response = client.get(path)
+        assert response.status_code == 200
+        assert response.json()["status"] == "ok"
+        assert response.json()["storage"] == "skipped"
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("env", "configured"),
+    [
+        ({}, False),
+        ({"AZURE_CLIENT_ID": "client"}, False),
+        ({"IDENTITY_ENDPOINT": "http://127.0.0.1"}, False),
+        (
+            {
+                "AZURE_CLIENT_ID": "client",
+                "AZURE_TENANT_ID": "tenant",
+                "AZURE_CLIENT_SECRET": "secret",
+            },
+            True,
+        ),
+        (
+            {
+                "AZURE_CLIENT_ID": "client",
+                "AZURE_TENANT_ID": "tenant",
+                "AZURE_CLIENT_CERTIFICATE_PATH": "/cert.pem",
+            },
+            True,
+        ),
+        (
+            {
+                "AZURE_CLIENT_ID": "client",
+                "AZURE_USERNAME": "user",
+                "AZURE_PASSWORD": "password",
+            },
+            True,
+        ),
+        (
+            {
+                "AZURE_CLIENT_ID": "client",
+                "AZURE_TENANT_ID": "tenant",
+                "AZURE_FEDERATED_TOKEN_FILE": "/token",
+            },
+            True,
+        ),
+        (
+            {"IDENTITY_ENDPOINT": "http://127.0.0.1", "IDENTITY_HEADER": "header"},
+            True,
+        ),
+        ({"MSI_ENDPOINT": "http://127.0.0.1"}, True),
+    ],
+)
+def test_credentials_configured_reads_environment_only(
+    monkeypatch: pytest.MonkeyPatch, env: dict[str, str], configured: bool
+) -> None:
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    assert blob_storage.credentials_configured() is configured
+
+
+def test_credential_env_without_storage_url_stays_skipped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_storage_config(monkeypatch)
+    monkeypatch.setenv("AZURE_CLIENT_ID", "client")
+    monkeypatch.setenv("AZURE_TENANT_ID", "tenant")
+    monkeypatch.setenv("AZURE_CLIENT_SECRET", "secret")
+    calls: list[str] = []
+
+    class FakeCredential:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+            calls.append("credential")
+
+    class FakeBlob:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+            calls.append("blob")
+
+    monkeypatch.setattr(blob_storage, "DefaultAzureCredential", FakeCredential)
+    monkeypatch.setattr(blob_storage, "BlobServiceClient", FakeBlob)
+
+    response = _client().get("/health")
+    assert response.status_code == 200
+    assert response.json()["storage"] == "skipped"
+    assert calls == []
+
+
+def test_enabled_storage_probe_reports_ok_or_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_storage_config(monkeypatch)
+    monkeypatch.setenv("AZURE_STORAGE_ACCOUNT_URL", "https://example.invalid")
+    calls: list[str] = []
+
+    class FakeCredential:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+            calls.append("credential")
+
+    class FakeContainer:
+        def get_container_properties(self, timeout: int = 3) -> None:
+            del timeout
+            result = FakeBlob.result
+            if isinstance(result, Exception):
+                raise result
+            if result is False:
+                raise RuntimeError("container missing")
+
+    class FakeBlob:
+        result: bool | Exception = True
+        raise_in_init = False
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            del args, kwargs
+            calls.append("blob")
+            if FakeBlob.raise_in_init:
+                raise ValueError("bad account url")
+
+        def get_container_client(self, name: str) -> FakeContainer:
+            del name
+            return FakeContainer()
+
+    monkeypatch.setattr(blob_storage, "DefaultAzureCredential", FakeCredential)
+    monkeypatch.setattr(blob_storage, "BlobServiceClient", FakeBlob)
+    blob_storage._build_probe_container.cache_clear()
+
+    client = _client()
+    ok = client.get("/health")
+    assert ok.status_code == 200
+    assert ok.json()["status"] == "ok"
+    assert ok.json()["storage"] == "ok"
+    assert calls == ["credential", "blob"]
+
+    calls.clear()
+    blob_storage._build_probe_container.cache_clear()
+    FakeBlob.result = False
+    missing = client.get("/api/v1/health")
+    assert missing.status_code == 200
+    assert missing.json()["storage"] == "unavailable"
+
+    calls.clear()
+    blob_storage._build_probe_container.cache_clear()
+    FakeBlob.result = RuntimeError("storage down")
+    failed = client.get("/health")
+    assert failed.status_code == 200
+    assert failed.json()["status"] == "ok"
+    assert failed.json()["storage"] == "unavailable"
+
+    calls.clear()
+    blob_storage._build_probe_container.cache_clear()
+    FakeBlob.raise_in_init = True
+    constructed = client.get("/health")
+    assert constructed.status_code == 200
+    assert constructed.json()["storage"] == "unavailable"
+    blob_storage._build_probe_container.cache_clear()

@@ -6,12 +6,17 @@ DEMO_MODE is "true" per Technical Spec v2. Only synthetic data exists,
 in every environment.
 """
 
+import logging
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 
 from app.contracts.enums import DataMode, DemoMode, EngineMode, LLMMode
+
+_ROOT = Path(__file__).resolve().parents[1]
+_DEFAULT_DATABASE_URL = "sqlite:///" + (_ROOT / "taxleak-local.db").as_posix()
 
 
 class ModeGuardError(RuntimeError):
@@ -25,7 +30,11 @@ class Settings:
     demo_mode: DemoMode
     llm_mode: LLMMode
     database_url: str  # SQLite is local scratch only; hosted state is Postgres.
+    rules_dir: str
+    ramp_webhook_secret: str
     llm_replay: bool
+    # Exact Origins. Empty when ORIGIN_ALLOWLIST is unset.
+    origin_allowlist: tuple[str, ...]
 
 
 def _parse_mode[M: StrEnum](
@@ -43,15 +52,65 @@ def _parse_mode[M: StrEnum](
         ) from None
 
 
+def _load_dotenv() -> None:
+    """Load unset keys from a gitignored .env file."""
+    path = _ROOT / ".env"
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+def _origin_allowlist(environ: Mapping[str, str]) -> tuple[str, ...]:
+    """Comma-separated exact Origins. Blank or unset leaves the allowlist off."""
+    raw = environ.get("ORIGIN_ALLOWLIST", "").strip()
+    if not raw:
+        return ()
+    return tuple(part.strip() for part in raw.split(",") if part.strip())
+
+
+_log = logging.getLogger("taxleak.startup")
+
+
+def _database_url(environ: Mapping[str, str]) -> str:
+    """Hosted runs need managed Postgres; SQLite is local scratch only.
+
+    On App Service (WEBSITE_SITE_NAME is set) a missing or SQLite DATABASE_URL
+    refuses startup instead of writing state to /home network storage.
+    """
+    url = environ.get("DATABASE_URL", "").strip()
+    if environ.get("WEBSITE_SITE_NAME"):
+        if not url or url.startswith("sqlite"):
+            message = (
+                "DATABASE_URL must point at managed PostgreSQL on App Service; "
+                "refusing to start"
+            )
+            _log.error(message)
+            raise ModeGuardError(message)
+        return url
+    return url or _DEFAULT_DATABASE_URL
+
+
 def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
     """Load and validate startup modes. Raises ModeGuardError on any violation."""
-    env = os.environ if environ is None else environ
+    if environ is None:
+        _load_dotenv()
+        env: Mapping[str, str] = os.environ
+    else:
+        env = environ
     llm_mode = _parse_mode(env, "LLM_MODE", LLMMode, LLMMode.REPLAY.value)
     return Settings(
         data_mode=_parse_mode(env, "DATA_MODE", DataMode, None),
         engine_mode=_parse_mode(env, "ENGINE_MODE", EngineMode, None),
         demo_mode=_parse_mode(env, "DEMO_MODE", DemoMode, None),
         llm_mode=llm_mode,
-        database_url=env.get("DATABASE_URL", "sqlite:///./taxleak-local.db"),
+        database_url=_database_url(env),
+        rules_dir=env.get("RULES_DIR", "rules"),
+        ramp_webhook_secret=env.get("RAMP_WEBHOOK_SECRET", ""),
         llm_replay=llm_mode is not LLMMode.LIVE,
+        origin_allowlist=_origin_allowlist(env),
     )

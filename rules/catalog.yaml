@@ -1,0 +1,30 @@
+# Draft required-fact catalog from Design Spec section 4.1.
+# status stays candidate until AF signs. Unsigned entries do not admit facts.
+entries:
+  - category: REMOTE_ACCESS_SAAS
+    status: candidate
+    signed_off_by:
+    required_keys:
+      - vendor_name
+      - invoice_date
+      - line_description
+      - line_amount
+      - buyer_entity
+      - tax_charged
+      - delivery_method
+      - access_model
+      - service_period
+      - seat_count
+      - user_location
+  - category: COMPUTER_HARDWARE
+    status: candidate
+    signed_off_by:
+    required_keys:
+      - vendor_name
+      - invoice_date
+      - line_description
+      - line_amount
+      - buyer_entity
+      - tax_charged
+      - delivery_evidence
+      - shipping
