@@ -10,7 +10,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from urllib.parse import parse_qsl, urlparse
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -56,7 +56,18 @@ def make_engine(url: str) -> Engine:
         if normalized.startswith("sqlite")
         else {}
     )
-    return create_engine(normalized, connect_args=connect_args)
+    engine = create_engine(normalized, connect_args=connect_args)
+    if normalized.startswith("sqlite"):
+        # Enforce foreign keys like hosted Postgres does, so local runs and
+        # tests catch insert-order bugs instead of hiding them.
+        event.listen(engine, "connect", _sqlite_foreign_keys)
+    return engine
+
+
+def _sqlite_foreign_keys(dbapi_connection: object, _record: object) -> None:
+    cursor = dbapi_connection.cursor()  # type: ignore[attr-defined]
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.close()
 
 
 def make_session_factory(engine: Engine) -> sessionmaker[Session]:
