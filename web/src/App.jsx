@@ -168,6 +168,9 @@ export default function App() {
   const [meta, setMeta] = useState(null);
   const [details, setDetails] = useState({});
   const [error, setError] = useState(null);
+  const [csrf, setCsrf] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState(null);
 
   useEffect(() => {
     let stopped = false;
@@ -179,10 +182,18 @@ export default function App() {
           : String(Date.now());
       const res = await fetch("/api/v1/demo/login", {
         method: "POST",
-        headers: { ...REQUESTED_WITH, "Idempotency-Key": key },
+        headers: {
+          ...REQUESTED_WITH,
+          "Idempotency-Key": key,
+          "Content-Type": "application/json",
+        },
         body: "{}",
       });
       if (!res.ok) throw new Error(`login failed with ${res.status}`);
+      const body = await res.json();
+      if (!stopped && typeof body.csrf_token === "string") {
+        setCsrf(body.csrf_token);
+      }
     }
     async function poll() {
       try {
@@ -228,6 +239,33 @@ export default function App() {
     };
   }, []);
 
+  async function postDemo(path, payload) {
+    if (!csrf) return;
+    const key =
+      typeof crypto !== "undefined" && crypto.randomUUID
+        ? crypto.randomUUID()
+        : String(Date.now());
+    setBusy(true);
+    setActionError(null);
+    try {
+      const res = await fetch(path, {
+        method: "POST",
+        headers: {
+          ...REQUESTED_WITH,
+          "Content-Type": "application/json",
+          "Idempotency-Key": key,
+          "X-CSRF-Token": csrf,
+        },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error(`${path} failed with ${res.status}`);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const rows = purchases || [];
   const ready = rows.filter((row) => row.queue === "ready");
   const nhr = rows.filter((row) => row.queue === "needs_human_review");
@@ -246,6 +284,30 @@ export default function App() {
       <Banner meta={meta} purchases={rows} />
       <main>
         <h1>Tax Leak</h1>
+        <div className="controls">
+          {["case1", "case2", "case3", "case4", "case5", "case6", "case7"].map(
+            (id) => (
+              <button
+                key={id}
+                type="button"
+                disabled={!csrf || busy}
+                onClick={() =>
+                  postDemo("/api/v1/demo/events", { scenario: id })
+                }
+              >
+                Load {id}
+              </button>
+            ),
+          )}
+          <button
+            type="button"
+            disabled={!csrf || busy}
+            onClick={() => postDemo("/api/v1/demo/reset", {})}
+          >
+            Reset demo
+          </button>
+        </div>
+        {actionError ? <p role="alert">{actionError}</p> : null}
         {error ? <p role="alert">Could not load data: {error}</p> : null}
         {purchases === null && !error ? <p>Loading purchases…</p> : null}
         <Totals totals={totals} />
