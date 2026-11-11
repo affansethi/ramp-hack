@@ -4,6 +4,7 @@ uvicorn[standard]
 gunicorn
 pydantic
 sqlalchemy>=2.0
+psycopg[binary]>=3.2
 pyyaml>=6
 azure-identity
 azure-storage-blob

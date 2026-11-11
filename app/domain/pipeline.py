@@ -980,7 +980,8 @@ def _apply_cross_check(
     purchase: Purchase, lines: list[PurchaseLine], facts: list[Fact]
 ) -> None:
     line_total = sum(
-        (parse_decimal(line.line_amount) for line in lines), start=parse_decimal("0")
+        (parse_decimal(_admitted_line_amount(line, facts)) for line in lines),
+        start=parse_decimal("0"),
     )
     if purchase.ramp_entity_amount and differs_by_more_than_one_cent(
         purchase.ramp_entity_amount, f"{line_total:.2f}"
@@ -1002,6 +1003,33 @@ def _apply_cross_check(
         for fact in facts:
             if fact.field_key == "tax_charged":
                 fact.confirmation = "UNCONFIRMED"
+
+
+def _admitted_line_amount(line: PurchaseLine, facts: list[Fact]) -> str:
+    """The line's current line-scoped line_amount fact, else the stored line.
+
+    A sourced correction (H5) supersedes the earlier fact, so the cross-check
+    and the engine read the corrected amount, never a stale line column.
+    """
+    for fact in facts:
+        if (
+            fact.field_key == "line_amount"
+            and fact.line_id == line.id
+            and fact.value is not None
+            and fact.value.strip()
+        ):
+            return fact.value
+    return line.line_amount
+
+
+def _confirmed_fact(views: dict[str, FactView], key: str) -> str | None:
+    """A confirmed, non-blank fact value for the engine request, else None."""
+    fact = views.get(key)
+    if fact is None or fact.confirmation != "CONFIRMED":
+        return None
+    if fact.value is None or not fact.value.strip():
+        return None
+    return fact.value
 
 
 def _first_hold(
@@ -1062,7 +1090,7 @@ def _evaluate_one(
         invoice_date=date.fromisoformat(purchase.invoice_date),
         service_period_start=_optional_date(line.service_period_start),
         delivery_date=_optional_date(line.delivery_date),
-        line_amount=line.line_amount,
+        line_amount=_confirmed_fact(views, "line_amount") or line.line_amount,
         tax_charged=tax.value,
         shipping=line.shipping_amount,
         location_name=line.location_name or "",

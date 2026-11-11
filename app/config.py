@@ -6,6 +6,7 @@ DEMO_MODE is "true" per Technical Spec v2. Only synthetic data exists,
 in every environment.
 """
 
+import logging
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -72,6 +73,28 @@ def _origin_allowlist(environ: Mapping[str, str]) -> tuple[str, ...]:
     return tuple(part.strip() for part in raw.split(",") if part.strip())
 
 
+_log = logging.getLogger("taxleak.startup")
+
+
+def _database_url(environ: Mapping[str, str]) -> str:
+    """Hosted runs need managed Postgres; SQLite is local scratch only.
+
+    On App Service (WEBSITE_SITE_NAME is set) a missing or SQLite DATABASE_URL
+    refuses startup instead of writing state to /home network storage.
+    """
+    url = environ.get("DATABASE_URL", "").strip()
+    if environ.get("WEBSITE_SITE_NAME"):
+        if not url or url.startswith("sqlite"):
+            message = (
+                "DATABASE_URL must point at managed PostgreSQL on App Service; "
+                "refusing to start"
+            )
+            _log.error(message)
+            raise ModeGuardError(message)
+        return url
+    return url or _DEFAULT_DATABASE_URL
+
+
 def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
     """Load and validate startup modes. Raises ModeGuardError on any violation."""
     if environ is None:
@@ -85,7 +108,7 @@ def load_settings(environ: Mapping[str, str] | None = None) -> Settings:
         engine_mode=_parse_mode(env, "ENGINE_MODE", EngineMode, None),
         demo_mode=_parse_mode(env, "DEMO_MODE", DemoMode, None),
         llm_mode=llm_mode,
-        database_url=env.get("DATABASE_URL", _DEFAULT_DATABASE_URL),
+        database_url=_database_url(env),
         rules_dir=env.get("RULES_DIR", "rules"),
         ramp_webhook_secret=env.get("RAMP_WEBHOOK_SECRET", ""),
         llm_replay=llm_mode is not LLMMode.LIVE,
