@@ -1,0 +1,127 @@
+# Blind verification pass (docs/content-verification.md step 4) for catalog-REMOTE_ACCESS_SAAS.
+# Written before opening the research evidence or the catalog's required_keys.
+item: catalog-REMOTE_ACCESS_SAAS
+role: verify
+lane: droid
+model: claude-opus-5-5
+issue: "#110"
+date: "2026-11-10"
+blind: true
+conclusion: agree
+notes: >-
+  Independent answer from the Design Spec section 4.1 candidate set (product basis), Technical
+  Spec v2 sections 3 and 4, the app's fact-key vocabulary (app/domain/commands.py
+  ALLOWED_FACT_FIELDS, app/domain/pipeline.py), and official CA/WA/NY sources. Common invoice
+  facts (vendor_name, invoice_date, line_description, line_amount, buyer_entity) and tax_charged
+  are required for every category by the Design Spec. For remote-access SaaS the Design Spec adds
+  delivery_method, access_model, service_period, seat_count and user_location. Law supports why
+  they matter: CA Reg. 1502(f)(1)(D) makes taxability turn on remote transfer with no tangible
+  storage media (delivery_method, access_model); NY TB-ST-128 sources remote-access software to
+  where users are and apportions by users located in NY (user_location, seat_count); WAC
+  458-20-15503(507)(c) apportions WA use tax by users in WA over users everywhere, supported by
+  records (user_location, seat_count); WAC 458-20-15503(403) applies use tax only if retail sales
+  tax has not been paid (tax_charged). service_period is required because the signed timing basis
+  for SaaS rules is the service period start (Technical Spec v2 section 3, Effective dating).
+  tax_charged_jurisdiction is required only when tax was charged (Design Spec 4.1); that
+  conditional requirement is enforced by app/domain/holds.py after the catalog loop, so it is not
+  part of the unconditional required_keys list (listing it would hold a sourced 0.00 invoice that
+  prints no tax jurisdiction). bill_to is informational and never required.
+  Comparison (after this file was written): identical to the research pass and to rules/catalog.yaml,
+  same 11 keys in the same order; no reordering was needed. Snapshot hashes are SHA-256 of the
+  LF bytes as committed (the Design Spec hash is of its git blob, since core.autocrlf rewrites
+  line endings in a Windows checkout).
+sources:
+  - url: https://www.cdtfa.ca.gov/lawguides/vol1/sutr/1502.html
+    authority: regulation (Cal. Code Regs., tit. 18, sec. 1502; CDTFA)
+    pinpoint: Reg. 1502(f)(1)(D)
+    quote: "The sale or lease of a prewritten program is not a taxable transaction if the program is transferred by remote telecommunications from the seller's place of business, to or through the purchaser's computer and the purchaser does not obtain possession of any tangible personal property, such as storage media, in the transaction."
+    supports: [delivery_method, access_model]
+    retrieved_at: "2026-11-10"
+    snapshot: rules/evidence/snapshots/verify-cdtfa-reg-1502.txt
+    snapshot_sha256: b408e1139838bc6464c83fe9244e355446f2eafcd0e36bf74bb4ee48e7f10e0f
+  - url: https://www.tax.ny.gov/pubs_and_bulls/tg_bulletins/st/computer_software.htm
+    authority: published guidance (NY DTF Tax Bulletin TB-ST-128)
+    pinpoint: TB-ST-128, Remotely accessed software
+    quote: "The situs of the sale for purposes of determining the proper local tax rate and jurisdiction is the location from which the purchaser uses or directs the use of the software, not the location of the code embodying the software. Therefore, if a purchaser has employees who use the software located both in and outside of New York State, the seller of the software should collect tax based on the portion of the receipt attributable to the users located in New York."
+    supports: [user_location, seat_count]
+    retrieved_at: "2026-11-10"
+    snapshot: rules/evidence/snapshots/verify-ny-tb-st-128.txt
+    snapshot_sha256: cb27d379a549594465b8095032ebccd40cdc4a5e67062dc49ca1f9e6b9fbb80c
+  - url: https://app.leg.wa.gov/wac/default.aspx?cite=458-20-15503
+    authority: regulation (WAC 458-20-15503; WA DOR)
+    pinpoint: WAC 458-20-15503(507)(c) and (507)(c)(i)
+    quote: "is entitled to apportion the amount of tax due this state based on users in this state compared to users everywhere."
+    supports: [user_location, seat_count]
+    retrieved_at: "2026-11-10"
+    snapshot: rules/evidence/snapshots/verify-wac-458-20-15503.txt
+    snapshot_sha256: 2cbdbe22b3e866c53928cb79856bf4f205bc59d7657a85bea78bd8e58f76e689
+  - url: https://app.leg.wa.gov/wac/default.aspx?cite=458-20-15503
+    authority: regulation (WAC 458-20-15503; WA DOR)
+    pinpoint: WAC 458-20-15503(507)(c)(i)
+    quote: "No allocation under this rule is allowed unless the allocation method is supported by the taxpayer's records kept in the ordinary course of business"
+    supports: [user_location, seat_count]
+    retrieved_at: "2026-11-10"
+    snapshot: rules/evidence/snapshots/verify-wac-458-20-15503.txt
+    snapshot_sha256: 2cbdbe22b3e866c53928cb79856bf4f205bc59d7657a85bea78bd8e58f76e689
+  - url: https://app.leg.wa.gov/wac/default.aspx?cite=458-20-15503
+    authority: regulation (WAC 458-20-15503; WA DOR)
+    pinpoint: WAC 458-20-15503(403)
+    quote: "Generally, use tax applies to the use of a digital product or digital code in Washington if retail sales tax has not already been paid and no exemption otherwise applies."
+    supports: [tax_charged]
+    retrieved_at: "2026-11-10"
+    snapshot: rules/evidence/snapshots/verify-wac-458-20-15503.txt
+    snapshot_sha256: 2cbdbe22b3e866c53928cb79856bf4f205bc59d7657a85bea78bd8e58f76e689
+  - url: "docs/spec/Tax Leak — Design Spec (Ramp Hackathon).md"
+    authority: product basis (Design Spec section 4.1, candidate required-fact set)
+    pinpoint: Design Spec section 4.1, Facts that matter table
+    quote: "Vendor name, invoice date, line description, line amount, buyer entity | Required"
+    supports: [vendor_name, invoice_date, line_description, line_amount, buyer_entity]
+    retrieved_at: "2026-11-10"
+    snapshot: "docs/spec/Tax Leak — Design Spec (Ramp Hackathon).md"
+    snapshot_sha256: 4a914ae6e673de907a2a39b5c06ecd6b7f80beb6855fe34455535a22ae18b055
+  - url: "docs/spec/Tax Leak — Design Spec (Ramp Hackathon).md"
+    authority: product basis (Design Spec section 4.1)
+    pinpoint: Design Spec section 4.1, Facts that matter table and rules that apply to every fact
+    quote: "Tax charged (amount), including \"none shown\" | Required"
+    supports: [tax_charged]
+    retrieved_at: "2026-11-10"
+    snapshot: "docs/spec/Tax Leak — Design Spec (Ramp Hackathon).md"
+    snapshot_sha256: 4a914ae6e673de907a2a39b5c06ecd6b7f80beb6855fe34455535a22ae18b055
+  - url: "docs/spec/Tax Leak — Design Spec (Ramp Hackathon).md"
+    authority: product basis (Design Spec section 4.1)
+    pinpoint: Design Spec section 4.1, Facts that matter table
+    quote: "Delivery method, access model, service period, seat count | Required (remote-access SaaS)"
+    supports: [delivery_method, access_model, service_period, seat_count]
+    retrieved_at: "2026-11-10"
+    snapshot: "docs/spec/Tax Leak — Design Spec (Ramp Hackathon).md"
+    snapshot_sha256: 4a914ae6e673de907a2a39b5c06ecd6b7f80beb6855fe34455535a22ae18b055
+  - url: "docs/spec/Tax Leak — Design Spec (Ramp Hackathon).md"
+    authority: product basis (Design Spec section 4.1)
+    pinpoint: Design Spec section 4.1, Facts that matter table
+    quote: "covering all seats | Required for SaaS, per jurisdiction"
+    supports: [user_location]
+    retrieved_at: "2026-11-10"
+    snapshot: "docs/spec/Tax Leak — Design Spec (Ramp Hackathon).md"
+    snapshot_sha256: 4a914ae6e673de907a2a39b5c06ecd6b7f80beb6855fe34455535a22ae18b055
+  - url: "docs/spec/Tax Leak — Design Spec (Ramp Hackathon).md"
+    authority: product basis (Design Spec section 4.1)
+    pinpoint: Design Spec section 4.1, Facts that matter table (conditional requirement, enforced in app/domain/holds.py)
+    quote: "Tax charged (jurisdiction), when tax was charged | Required"
+    supports: [tax_charged_jurisdiction (conditional, not in required_keys)]
+    retrieved_at: "2026-11-10"
+    snapshot: "docs/spec/Tax Leak — Design Spec (Ramp Hackathon).md"
+    snapshot_sha256: 4a914ae6e673de907a2a39b5c06ecd6b7f80beb6855fe34455535a22ae18b055
+values:
+  category: REMOTE_ACCESS_SAAS
+  required_keys:
+    - vendor_name
+    - invoice_date
+    - line_description
+    - line_amount
+    - buyer_entity
+    - tax_charged
+    - delivery_method
+    - access_model
+    - service_period
+    - seat_count
+    - user_location

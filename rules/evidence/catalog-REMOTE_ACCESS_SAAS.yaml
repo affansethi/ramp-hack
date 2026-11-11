@@ -218,3 +218,25 @@ attestations:
     blind: true
     conclusion: agree
     notes: Research pass for issue 42 by Muse Code (Muse Spark, Meta Muse Spark). Each page fetched with curl on 2026-11-10 and saved under rules/evidence/snapshots/; every quote copied verbatim from its snapshot. Values are proposed only; rules/catalog.yaml statuses left candidate for the blind verification issue.
+  - role: verify
+    lane: droid
+    model: claude-opus-5-5
+    issue: "#110"
+    date: "2026-11-10"
+    blind: true
+    conclusion: agree
+    notes: >-
+      Blind pass by Droid (Claude Opus 5.5, Anthropic) on a different lane and model family. The
+      independent answer (verification/catalog-REMOTE_ACCESS_SAAS.droid.yaml, written before this
+      file or the catalog's required_keys were opened) matches exactly: the same 11 required keys,
+      vendor_name, invoice_date, line_description, line_amount, buyer_entity, tax_charged,
+      delivery_method, access_model, service_period, seat_count, user_location. Both passes treat
+      tax_charged_jurisdiction as conditional (enforced in app/domain/holds.py) and bill_to as
+      informational. Evidence audit: every research URL is allowlisted, every quote appears in its
+      snapshot, and every snapshot SHA-256 matches the committed (LF) bytes. Non-blocking
+      observations for AF: the WAC 458-20-15503(607) records quotes support record keeping in
+      general rather than each named invoice field; Example 10 (cited for service_period) concerns
+      a digital automated service, not remote access software, so service_period rests mainly on
+      the Design Spec and the signed service_period_start timing basis; CA support is better
+      pinpointed at Reg. 1502(f)(1)(D) (cited in the verifier file) than at its item (7) time-sharing provision.
+      Evidence only; catalog.yaml stays candidate until AF signs.
