@@ -67,6 +67,19 @@ class IdempotencyKey(Base):
 
 class AuditEvent(Base):
     __tablename__ = "audit_events"
+    __table_args__ = (
+        Index(
+            "uq_audit_stage",
+            "org_id",
+            "object_type",
+            "object_id",
+            "command",
+            "object_version",
+            unique=True,
+            sqlite_where=text("actor_id = 'system'"),
+            postgresql_where=text("actor_id = 'system'"),
+        ),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     org_id: Mapped[str] = mapped_column(String(36), index=True)
@@ -141,7 +154,12 @@ class Document(Base):
     __tablename__ = "documents"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    purchase_id: Mapped[str] = mapped_column(ForeignKey("purchases.id"), index=True)
+    # Null until a purchase exists: an import stores bytes first (#27) and
+    # #49 links the purchase later through the import job.
+    purchase_id: Mapped[str | None] = mapped_column(
+        ForeignKey("purchases.id"), nullable=True, index=True
+    )
+    blob_key: Mapped[str | None] = mapped_column(String(400), nullable=True)
     sha256: Mapped[str] = mapped_column(String(64))
     mime_type: Mapped[str] = mapped_column(String(80))
     pages: Mapped[int] = mapped_column(Integer)
@@ -352,6 +370,7 @@ class Job(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     org_id: Mapped[str] = mapped_column(String(36), index=True)
     kind: Mapped[str] = mapped_column(String(32))
+    input_payload: Mapped[str | None] = mapped_column(Text, nullable=True)
     purchase_id: Mapped[str | None] = mapped_column(
         String(36), nullable=True, index=True
     )

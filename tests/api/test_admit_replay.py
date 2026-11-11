@@ -158,6 +158,12 @@ def _run(client: TestClient, scenario: str, key: str) -> dict[str, object]:
     assert body["llm_mode"] == "replay"
     assert body["replay"] is True
     assert poll_once(client.app.state.ctx) == 1 or body["duplicate"] is True
+    if body["purchase_id"] is None:
+        job = client.get(f"/api/v1/jobs/{body['job_id']}", headers=_headers())
+        assert job.status_code == 200, job.text
+        body["purchase_id"] = job.json()["purchase_id"]
+        assert body["purchase_id"] is not None
+        assert poll_once(client.app.state.ctx) == 1
     return body
 
 
@@ -239,7 +245,8 @@ def test_cases_1_4_6_and_7_stay_labeled_replay(
     replayed = _detail(client, case7["purchase_id"])
     _assert_replay(replayed)
 
-    assert len(seen) == 4
+    # Replaying the stored event does not repeat extraction.
+    assert len(seen) == 3
     for payload in seen:
         _assert_payload_is_evidence(payload)
 
@@ -280,6 +287,11 @@ def test_forbidden_key_aborts_before_admission(
     job_id = body["job_id"]
     assert isinstance(job_id, str)
 
+    pending = client.get(f"/api/v1/jobs/{job_id}", headers=_headers())
+    assert pending.json()["status"] == "QUEUED"
+    assert pending.json()["error_code"] is None
+    # Intake only persists the event. The worker fetches and validates it.
+    assert poll_once(client.app.state.ctx) == 1
     job = client.get(f"/api/v1/jobs/{job_id}", headers=_headers())
     assert job.status_code == 200, job.text
     job_body = job.json()

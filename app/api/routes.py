@@ -4,24 +4,33 @@ Mutations require Idempotency-Key, the demo header, and the login CSRF token.
 The shared guard is MutationGuardMiddleware, so a route added later inherits it.
 """
 
+import hashlib
 import json
+import logging
 import re
+import time
 from collections.abc import Iterator
 from datetime import date
 from typing import Annotated, Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import APIRouter, Depends, File, Form, Query, Request, Response, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.orm import Session
 from starlette.datastructures import QueryParams
 
+from app.adapters import storage as storage_module
 from app.adapters.ramp import signature_matches
 from app.api.guards import COOKIE, new_csrf_token
-from app.api.idempotency import begin, finish
-from app.api.serialize import meta, purchase_detail, purchase_summary
+from app.api.idempotency import begin, finish, stored_status
+from app.api.serialize import (
+    meta,
+    purchase_detail,
+    purchase_summary,
+    workpaper_detail,
+)
 from app.clock import utcnow
 from app.contracts.jobs import read_job
 from app.demo.scenarios import get_scenario, scenario_ids
@@ -37,7 +46,7 @@ from app.domain.commands import (
 )
 from app.domain.errors import DomainError
 from app.domain.evaluate import quarter_key
-from app.domain.pipeline import ingest_scenario, ingest_webhook
+from app.domain.pipeline import ingest_webhook
 from app.models import (
     AuditEvent,
     DemoSession,
@@ -50,6 +59,7 @@ from app.models import (
     Job,
     JournalEntryDraft,
     LiabilityLine,
+    Organization,
     Person,
     Purchase,
     PurchaseLine,
@@ -103,6 +113,7 @@ class ReferBody(BaseModel):
 
     action: Literal["leave_open", "send_to_advisor"]
     note: str = ""
+    expected_version: int
 
 
 class WorkpaperBody(BaseModel):
@@ -286,11 +297,20 @@ def demo_event(body: ScenarioBody, request: Request, session: Db) -> dict[str, o
     scenario = get_scenario(body.scenario)
     if scenario is None:
         raise DomainError("NOT_FOUND", "Unknown scenario.", 404)
-    result = ingest_scenario(session, scenario, viewer.org_id)
+    result = ingest_webhook(
+        session,
+        viewer.org_id,
+        event_id=scenario.event_id,
+        event_type="transactions.receipt_added",
+        object_id=scenario.event_id,
+        signature_ok=True,
+        demo_scenario=scenario.id,
+    )
     payload: dict[str, object] = {
         **meta(request.app.state.settings),
         "purchase_id": result.purchase_id,
         "job_id": result.job_id,
+        "source": "simulated Ramp webhook",
         "duplicate": result.duplicate,
         "scenario": body.scenario,
     }
@@ -316,48 +336,208 @@ async def webhook(request: Request, session: Db) -> JSONResponse:
     if not isinstance(payload_in, dict):
         raise DomainError("BAD_REQUEST", "Webhook body must be an object.", 400)
     event_id = payload_in.get("id")
-    transaction = payload_in.get("transaction")
-    if not isinstance(event_id, str) or not isinstance(transaction, dict):
+    event_type = payload_in.get("type")
+    data = payload_in.get("data")
+    if (
+        not isinstance(event_id, str)
+        or not event_id
+        or event_type
+        not in ("transactions.receipt_added", "transactions.cleared", "bills.created")
+        or not isinstance(data, dict)
+        or not isinstance(data.get("id"), str)
+        or not data["id"]
+    ):
         raise DomainError(
-            "BAD_REQUEST", "Webhook needs an id and a transaction object.", 400
+            "BAD_REQUEST", "Webhook needs an id, supported type and data.id.", 400
         )
-    amount = transaction.get("amount")
-    if not isinstance(amount, str):
-        raise DomainError(
-            "BAD_REQUEST", "Transaction amount must be a decimal string.", 422
-        )
-    currency = transaction.get("currency_code")
-    if not isinstance(currency, str):
-        currency = "USD"
-    when = transaction.get("user_transaction_time")
-    invoice_date = (
-        when[:10] if isinstance(when, str) and len(when) >= 10 else "2026-11-15"
-    )
-    vendor = transaction.get("merchant_name")
-    if not isinstance(vendor, str):
-        vendor = "Synthetic vendor"
-    transaction_id = transaction.get("id")
-    if not isinstance(transaction_id, str):
-        transaction_id = event_id
+    receipt_id = data.get("receipt_id")
+    if receipt_id is not None and (not isinstance(receipt_id, str) or not receipt_id):
+        raise DomainError("BAD_REQUEST", "receipt_id must be a nonempty string.", 400)
+    if set(data) - {"id", "receipt_id"}:
+        raise DomainError("BAD_REQUEST", "Webhook data carries IDs only.", 400)
     result = ingest_webhook(
         session,
         ORG_ID,
         event_id=event_id,
-        transaction_id=transaction_id,
-        vendor=vendor,
-        amount=amount,
-        currency=currency,
-        invoice_date=invoice_date,
+        event_type=event_type,
+        object_id=data["id"],
+        receipt_id=receipt_id,
         signature_ok=True,
+        raw_payload=raw.decode("utf-8"),
     )
     payload: dict[str, object] = {
         **meta(request.app.state.settings),
         "purchase_id": result.purchase_id,
         "job_id": result.job_id,
+        "source": "simulated Ramp webhook",
         "duplicate": result.duplicate,
     }
     finish(session, ORG_ID, key or "", raw.decode("utf-8"), payload)
     return JSONResponse(payload)
+
+
+log = logging.getLogger("taxleak.api")
+
+_MAX_IMPORT_BYTES = 10 * 1024 * 1024
+_MAX_IMPORT_PAGES = 10
+_IMPORT_MIME_TYPES = frozenset(
+    {"application/pdf", "image/png", "image/jpeg", "text/csv"}
+)
+_IMPORT_WINDOW_SECONDS = 60.0
+_IMPORT_MAX_PER_WINDOW = 10
+_import_hits: dict[str, list[float]] = {}
+
+_PNG_MAGIC = bytes((0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A))
+_JPEG_MAGIC = bytes((0xFF, 0xD8, 0xFF))
+_PAGE_RE = re.compile(rb"/Type\s*/Page(?!s)")
+
+
+def _reset_import_rate_limit() -> None:
+    """Clear the in-process import quota. Tests only."""
+    _import_hits.clear()
+
+
+def _check_import_rate_limit(org_id: str) -> None:
+    now = time.monotonic()
+    hits = [
+        hit
+        for hit in _import_hits.get(org_id, [])
+        if now - hit < _IMPORT_WINDOW_SECONDS
+    ]
+    if len(hits) >= _IMPORT_MAX_PER_WINDOW:
+        _import_hits[org_id] = hits
+        raise DomainError("RATE_LIMITED", "Too many imports; retry later.", 429)
+    hits.append(now)
+    _import_hits[org_id] = hits
+
+
+def _check_import_signature(mime_type: str, data: bytes) -> None:
+    """Magic bytes must agree with the declared multipart type."""
+    if mime_type == "application/pdf":
+        matched = data.startswith(b"%PDF")
+    elif mime_type == "image/png":
+        matched = data.startswith(_PNG_MAGIC)
+    elif mime_type == "image/jpeg":
+        matched = data.startswith(_JPEG_MAGIC)
+    else:
+        try:
+            data.decode("utf-8")
+        except UnicodeDecodeError:
+            matched = False
+        else:
+            matched = b"\x00" not in data
+    if not matched:
+        raise DomainError(
+            "FILE_SIGNATURE_MISMATCH",
+            "File bytes disagree with the declared type.",
+            422,
+        )
+
+
+def _import_pages(mime_type: str, data: bytes) -> int:
+    """Page count without a PDF library. Uncountable is a 422, never a zero."""
+    if mime_type != "application/pdf":
+        return 1
+    count = len(_PAGE_RE.findall(data))
+    if count == 0:
+        raise DomainError("UNREADABLE_DOCUMENT", "PDF page count is unreadable.", 422)
+    return count
+
+
+@router.post("/imports", status_code=202)
+async def imports(
+    request: Request,
+    session: Db,
+    entity_id: Annotated[str, Form()],
+    file: Annotated[UploadFile, File()],
+    url: Annotated[str | None, Form()] = None,
+) -> JSONResponse:
+    """Store one synthetic file and enqueue a kind=import job.
+
+    Enqueued with kind=import for #49 to process. Nothing here parses
+    the file, calls the model, or creates a purchase or determination.
+    """
+    viewer = _viewer(request, session)
+    entity = session.get(Organization, entity_id)
+    if entity is None or entity.id != viewer.org_id:
+        raise DomainError("NOT_FOUND", "Entity not found.", 404)
+    data = await file.read()
+    digest = hashlib.sha256(data).hexdigest()
+    declared = (file.content_type or "").split(";")[0].strip().lower()
+    normalized_url = url or None
+    canonical = json.dumps(
+        {
+            "entity_id": entity_id,
+            "sha256": digest,
+            "mime_type": declared,
+            "filename": file.filename,
+            "url": normalized_url,
+        }
+    )
+    key = _key(request)
+    stored = begin(session, viewer.org_id, key, canonical)
+    if stored is not None:
+        status = stored_status(session, viewer.org_id, key or "")
+        return JSONResponse(stored, status_code=status)
+    if normalized_url is not None:
+        raise DomainError(
+            "URL_NOT_ALLOWED",
+            "URL ingestion is not accepted; upload the file.",
+            422,
+        )
+    _check_import_rate_limit(viewer.org_id)
+    if declared not in _IMPORT_MIME_TYPES:
+        raise DomainError(
+            "UNSUPPORTED_FILE_TYPE",
+            "Only PDF, PNG, JPEG, or CSV uploads are accepted.",
+            422,
+        )
+    if len(data) > _MAX_IMPORT_BYTES:
+        raise DomainError("FILE_TOO_LARGE", "Document exceeds 10 MB.", 413)
+    _check_import_signature(declared, data)
+    pages = _import_pages(declared, data)
+    if pages > _MAX_IMPORT_PAGES:
+        raise DomainError("FILE_TOO_LARGE", "Document exceeds 10 pages.", 413)
+    store = getattr(request.app.state, "storage", None) or storage_module
+    placed = store.put_document(data, declared)
+    document = Document(
+        id=str(uuid4()),
+        purchase_id=None,
+        blob_key=placed.key,
+        sha256=digest,
+        mime_type=declared,
+        pages=pages,
+    )
+    session.add(document)
+    job = Job(
+        id=str(uuid4()),
+        org_id=viewer.org_id,
+        kind="import",
+        purchase_id=None,
+        status="QUEUED",
+        lease_until=None,
+        attempts=0,
+        error_code=None,
+        created_at=utcnow(),
+    )
+    session.add(job)
+    session.flush()
+    log.info(
+        "import stored import_id=%s job_id=%s sha256=%s size=%d mime=%s pages=%d",
+        document.id,
+        job.id,
+        digest,
+        len(data),
+        declared,
+        pages,
+    )
+    payload: dict[str, object] = {
+        **meta(request.app.state.settings),
+        "import_id": document.id,
+        "job_id": job.id,
+    }
+    finish(session, viewer.org_id, key or "", canonical, payload, 202)
+    return JSONResponse(payload, status_code=202)
 
 
 @router.get("/jobs/{job_id}")
@@ -494,6 +674,7 @@ def review(
         approval_path=body.approval_path,
         reason=body.reason,
         expected_version=body.expected_version,
+        rules_dir=request.app.state.settings.rules_dir,
     )
     row = session.get(Purchase, determination.purchase_id)
     if row is None:
@@ -519,6 +700,7 @@ def refer(
         determination_id=determination_id,
         action=body.action,
         note=body.note,
+        expected_version=body.expected_version,
     )
     row = session.get(Purchase, determination.purchase_id)
     if row is None:
@@ -537,6 +719,16 @@ def totals(request: Request, session: Db) -> dict[str, object]:
     }
 
 
+def _draft_is_current(session: Session, determination_id: str) -> bool:
+    """Drafts exist only for an approved, current determination (spec §7)."""
+    row = session.get(Determination, determination_id)
+    return (
+        row is not None
+        and row.is_current
+        and row.unit_status in ("APPROVED", "APPROVED_FOR_PURSUIT")
+    )
+
+
 @router.get("/drafts/journal-entries")
 def journals(request: Request, session: Db) -> dict[str, object]:
     viewer = _viewer(request, session)
@@ -544,6 +736,8 @@ def journals(request: Request, session: Db) -> dict[str, object]:
     for draft in session.scalars(select(JournalEntryDraft)).all():
         purchase = session.get(Purchase, draft.purchase_id)
         if purchase is None or purchase.org_id != viewer.org_id:
+            continue
+        if not _draft_is_current(session, draft.determination_id):
             continue
         rows.append(
             {
@@ -567,6 +761,9 @@ def refund_letter(letter_id: str, request: Request, session: Db) -> dict[str, ob
     purchase = session.get(Purchase, letter.purchase_id)
     if purchase is None or purchase.org_id != viewer.org_id:
         raise DomainError("NOT_FOUND", "Letter not found.", 404)
+    if not _draft_is_current(session, letter.determination_id):
+        # A superseded or no-longer-approved result has no current draft.
+        raise DomainError("NOT_FOUND", "Letter is no longer current.", 404)
     return {
         **meta(request.app.state.settings),
         "id": letter.id,
@@ -574,7 +771,11 @@ def refund_letter(letter_id: str, request: Request, session: Db) -> dict[str, ob
         "invoice_number": letter.invoice_number,
         "amount": {"value": letter.amount, "currency": "USD"},
         "basis_text": letter.basis_text,
-        "basis_note": "Basis text is not signed. This draft is not sent.",
+        "basis_note": (
+            "This draft is not sent."
+            if letter.basis_text
+            else "Basis text is not signed. This draft is not sent."
+        ),
         "status": letter.status,
     }
 
@@ -613,6 +814,18 @@ def mark_ready(
     payload = _workpaper_json(request, session, workpaper)
     finish(session, viewer.org_id, _key(request) or "", canonical, payload)
     return payload
+
+
+@router.get("/workpapers/{workpaper_id}")
+def workpaper(workpaper_id: str, request: Request, session: Db) -> dict[str, object]:
+    viewer = _viewer(request, session)
+    row = session.get(Workpaper, workpaper_id)
+    if row is None or row.org_id != viewer.org_id:
+        raise DomainError("NOT_FOUND", "Workpaper not found.", 404)
+    return {
+        **meta(request.app.state.settings),
+        **workpaper_detail(session, row),
+    }
 
 
 @router.get("/workpapers/{workpaper_id}/export")

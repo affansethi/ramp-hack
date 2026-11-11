@@ -2,17 +2,19 @@
 
 from dataclasses import replace
 from datetime import date
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 
 from app.domain.evaluate import EngineLineRequest, EngineLineResult, evaluate_line
 from app.domain.moneyutil import emit_cents
 from app.domain.ruleset import (
     RateEntry,
+    RoundingBasis,
     RuleEntry,
     Ruleset,
     load_ruleset,
     rate_is_active,
+    rounding_is_active,
     rule_is_active,
 )
 
@@ -142,6 +144,50 @@ def _no_amount(result: EngineLineResult) -> None:
 def test_emit_cents_keeps_exact_cents_and_refuses_to_round() -> None:
     assert emit_cents(Decimal("151.92")) == "151.92"
     assert emit_cents(Decimal("186.375")) is None
+
+
+def test_owner_rounding_basis_quantizes_an_inexact_product() -> None:
+    ruleset = load_ruleset(Path("rules"))
+    assert rounding_is_active(ruleset.rounding)
+    ny = EngineLineRequest(
+        jurisdiction="NY",
+        category="COMPUTER_HARDWARE",
+        invoice_date=date(2026, 11, 15),
+        service_period_start=None,
+        delivery_date=date(2026, 11, 15),
+        line_amount="2100.00",
+        tax_charged="0.00",
+        shipping="0.00",
+        location_name="New York City, NY",
+        state_count=1,
+    )
+    result = evaluate_line(ruleset, ny)
+    product = Decimal("2100.00") * Decimal("0.08875")
+    assert emit_cents(product) is None
+    assert result.outcome == "supported"
+    assert result.expected_tax == (
+        f"{product.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):.2f}"
+    )
+    unsigned = Ruleset(
+        rules=ruleset.rules,
+        rates=ruleset.rates,
+        catalog=ruleset.catalog,
+        version="no-round",
+        rounding=RoundingBasis(
+            mode="nearest_cent_half_up",
+            review_status="candidate",
+            reviewed_by=None,
+            source_url="https://example.test/round",
+        ),
+    )
+    refused = evaluate_line(unsigned, ny)
+    assert refused.outcome == "error"
+    assert refused.error_code == "INEXACT_CENTS"
+    _no_amount(refused)
+    outside = evaluate_line(ruleset, _wa_request(line_amount="10.00", shipping="0.00"))
+    assert outside.outcome == "error"
+    assert outside.error_code == "INEXACT_CENTS"
+    _no_amount(outside)
 
 
 def test_inexact_product_is_an_error_with_no_amount() -> None:
