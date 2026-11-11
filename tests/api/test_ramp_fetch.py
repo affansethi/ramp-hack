@@ -79,11 +79,16 @@ def test_fetch_only_in_worker(
         purchase = session.scalar(select(Purchase))
         assert purchase.ramp_entity_amount == "123.450"
         assert purchase.ramp_ocr_taxes == "7.250"
+        # The record has a transaction time but no printed invoice date, so the
+        # invoice date stays missing (and no invoice_date fact is admitted).
         assert (purchase.vendor, purchase.invoice_number, purchase.invoice_date) == (
             "Synthetic Vendor",
             "SYN-25",
-            "2026-11-15",
+            "",
         )
+        assert not session.scalars(
+            select(Fact).where(Fact.field_key == "invoice_date")
+        ).all()
         assert purchase.category is None
         assert not session.scalars(
             select(Fact).where(

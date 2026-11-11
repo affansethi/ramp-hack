@@ -74,18 +74,21 @@ class RampSimulator:
             vendor=record.get("merchant_name", record.get("vendor", "")),
             invoice_number=record.get("invoice_number", ""),
             invoice_date=_invoice_date(record),
+            transaction_date=_transaction_date(record),
             ocr_taxes=total,
         )
 
 
 def _invoice_date(record: dict[str, Any]) -> str:
-    """Prefer the bill's invoice_date; else the card time's date part.
+    """The printed invoice date only; "" when the record has none.
 
-    A null or non-string time gives "" instead of raising, so a later stage
-    sees a missing date rather than the fetch job failing.
+    A card's transaction time is not an invoice date: substituting it lets a
+    card falsely match a bill dated that day, so a missing date stays missing.
     """
     invoice_date = record.get("invoice_date")
-    if isinstance(invoice_date, str) and invoice_date:
-        return invoice_date
+    return invoice_date if isinstance(invoice_date, str) and invoice_date else ""
+
+
+def _transaction_date(record: dict[str, Any]) -> str:
     stamp = record.get("user_transaction_time")
     return stamp[:10] if isinstance(stamp, str) else ""

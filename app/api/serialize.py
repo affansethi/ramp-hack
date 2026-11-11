@@ -11,6 +11,7 @@ from app.contracts.determination import DeterminationRead
 from app.contracts.money import Money
 from app.domain.moneyutil import money_json, parse_decimal
 from app.models import (
+    AuditEvent,
     Determination,
     Document,
     Evidence,
@@ -237,6 +238,7 @@ def purchase_detail(
         "approver_name": _current_approver(approvals, current),
         "approved_at": _current_approved_at(approvals, current),
         "actions": _actions(queue),
+        "possible_duplicate_ids": _possible_duplicate_ids(session, purchase),
     }
     if queue == "held":
         total = sum(
@@ -573,6 +575,23 @@ def _actions(queue: str) -> list[str]:
     if queue == "needs_human_review":
         return ["refer"]
     return []
+
+
+def _possible_duplicate_ids(session: Session, purchase: Purchase) -> list[str]:
+    prefix = "ambiguous_invoice_match:"
+    rows = session.scalars(
+        select(AuditEvent).where(
+            AuditEvent.org_id == purchase.org_id,
+            AuditEvent.object_id == purchase.id,
+            AuditEvent.command.like(prefix + "%"),
+        )
+    ).all()
+    found: list[str] = []
+    for row in rows:
+        other = row.command[len(prefix) :]
+        if other and other not in found:
+            found.append(other)
+    return found
 
 
 def _holds(session: Session, purchase_id: str) -> list[Hold]:
