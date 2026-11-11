@@ -151,11 +151,30 @@ export const HELD_DETAIL = {
   possible_duplicate_ids: [],
 };
 
+export const READY_DETAIL = {
+  ...META,
+  ...PURCHASES.purchases[0],
+  lines: [],
+  documents: [],
+  facts: [],
+  holds: [],
+  questions: [],
+  determinations: [],
+  past_determinations: [],
+  fact_history: [],
+  decisions: [],
+  approver_name: null,
+  approved_at: null,
+  actions: ["approve", "reject"],
+  possible_duplicate_ids: [],
+};
+
 export function baseRoutes(overrides = {}) {
   return {
     "GET /api/v1/purchases": PURCHASES,
     "GET /api/v1/totals": TOTALS,
     "GET /api/v1/purchases/held-1": HELD_DETAIL,
+    "GET /api/v1/purchases/ready-1": READY_DETAIL,
     ...overrides,
   };
 }

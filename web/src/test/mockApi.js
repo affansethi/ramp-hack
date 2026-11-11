@@ -20,7 +20,17 @@ function respond(result) {
 export function mockApi(routes) {
   const calls = [];
   const table = {
-    "POST /api/v1/demo/login": { csrf_token: "csrf-test", person_name: "Demo Reviewer" },
+    "POST /api/v1/demo/login": {
+      data_mode: "synthetic",
+      engine_mode: "mock_reviewed_ruleset",
+      llm_mode: "replay",
+      replay: true,
+      csrf_token: "csrf-test",
+      person_name: "Demo Reviewer",
+    },
+    "GET /api/v1/demo/scenarios": { scenarios: ["case1", "case3", "case6"] },
+    "GET /api/v1/jobs": { jobs: [] },
+    "GET /api/v1/drafts/journal-entries": { drafts: [] },
     ...routes,
   };
   const fetchMock = vi.fn(async (url, options = {}) => {
@@ -32,7 +42,8 @@ export function mockApi(routes) {
       body: options.body ? JSON.parse(options.body) : undefined,
     };
     calls.push(call);
-    const handler = table[`${method} ${url}`];
+    const path = String(url).split("?")[0];
+    const handler = table[`${method} ${url}`] ?? table[`${method} ${path}`];
     if (handler === undefined) throw new Error(`unexpected fetch: ${method} ${url}`);
     return respond(typeof handler === "function" ? handler(call) : handler);
   });

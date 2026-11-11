@@ -21,7 +21,8 @@ _FILING_WORDS = re.compile(r"\b(?:filed|paid|submitted|accepted)\b", re.IGNORECA
 _SIMULATED = re.compile(r"\bsimulated\b", re.IGNORECASE)
 _ALLOWED_CLAIM = re.compile(r"not recovered cash", re.IGNORECASE)
 _CLAIM_WORDS = re.compile(r"\b(?:net|savings|recovered)\b", re.IGNORECASE)
-_LIVE = re.compile(r"\blive\b", re.IGNORECASE)
+# aria-live is an accessibility attribute, not an extraction label.
+_LIVE = re.compile(r"(?<!aria-)\blive\b", re.IGNORECASE)
 _MONEY_MATH = (
     re.compile(r"\bparseFloat\b"),
     re.compile(r"\bparseInt\b"),
@@ -332,6 +333,11 @@ def test_test_files_are_the_only_allowlist(tmp_path: Path) -> None:
 )
 def test_bundle_scan_catches_planted_copy(bundle: str) -> None:
     assert bundle_violations(bundle)
+
+
+def test_bundle_scan_allows_aria_live() -> None:
+    bundle = 'n.jsx("span",{className:"job","aria-live":"polite"})'
+    assert bundle_violations(bundle) == []
 
 
 def test_bundle_scan_allows_simulated_and_not_recovered_cash() -> None:
